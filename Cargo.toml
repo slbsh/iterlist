@@ -1,0 +1,9 @@
+[package]
+name = "iterlist"
+description = "Linked list with a cursor-like api"
+license = "MIT"
+repository = "https://github.com/slbsh/iterlist"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
