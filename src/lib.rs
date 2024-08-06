@@ -13,7 +13,7 @@ pub struct IterList<T> {
 type Link<T> = Option<NonNull<Node<T>>>;
 
 #[derive(Debug, Clone)]
-pub struct Node<T> {
+struct Node<T> {
     next: Link<T>,
     prev: Link<T>,
     elem: T,
@@ -393,7 +393,7 @@ impl<T> IterList<T> {
     }
 
     /// Get a raw pointer to the front element. `O(n)`.
-    pub fn raw_front(&self) -> Option<NonNull<Node<T>>> {
+    fn raw_front(&self) -> Option<NonNull<Node<T>>> {
         unsafe {
             let mut current = self.current;
             while let Some(node) = current.as_ref().and_then(|node| node.as_ref().prev) {
@@ -401,23 +401,6 @@ impl<T> IterList<T> {
             }
             current
         }
-    }
-
-    /// Get a raw pointer to the back element. `O(n)`.
-    pub fn raw_back(&self) -> Option<NonNull<Node<T>>> {
-        unsafe {
-            let mut current = self.current;
-            while let Some(node) = current.as_ref().and_then(|node| node.as_ref().next) {
-                current = Some(node);
-            }
-            current
-        }
-    }
-
-    /// Get a raw pointer to the current element. `O(1)`.
-    #[inline]
-    pub fn raw_current(&self) -> Option<NonNull<Node<T>>> {
-        self.current
     }
 }
 
