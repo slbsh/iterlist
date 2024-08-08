@@ -1,9 +1,9 @@
 [package]
 name = "iterlist"
-description = "Linked list with a cursor-like api"
-license = "MIT"
+description = "Linked list with a cursor based api"
+license = "0BSD"
 repository = "https://github.com/slbsh/iterlist"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
-
-[dependencies]
+keywords = ["linked-list", "cursor", "data-structures"]
+readme = "README.md"
