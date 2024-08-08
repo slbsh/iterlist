@@ -30,7 +30,7 @@
 //! assert_eq!(list.get(1), Some(&1));
 //! 
 //! list.move_by(2);
-//! list.consume();
+//! list.consume_foward();
 //! 
 //! assert_eq!(format!("{:?}", list), "[-1, 1, 3]");
 //! 
@@ -397,29 +397,49 @@ impl<T> IterList<T> {
         }
     }
 
-    /// Remove the current element and return it. `O(1)`.
+    /// Remove the current element and return it. `O(1)`.  
+    /// The cursor will then point to the next element.
     /// ```
     /// # use iterlist::IterList;
     /// let mut list = IterList::from(vec![1, 2, 3]);
-    /// assert_eq!(list.consume(), Some(1));
+    /// assert_eq!(list.consume_foward(), Some(1));
     /// assert_eq!(&format!("{:?}", list), "[2, 3]");
+    /// assert_eq!(list.get_cursor(), Some(&2));
     /// ```
-    pub fn consume(&mut self) -> Option<T> {
+    pub fn consume_foward(&mut self) -> Option<T> {
         self.current.as_ptr().map(|node| unsafe {
             let node = Box::from_raw(node);
 
-            if let Some(prev) = node.prev.as_mut() {
-                prev.next = node.next
-            }
+            node.prev.as_mut().map(|prev| prev.next = node.next);
+            node.next.as_mut().map(|next| next.prev = node.prev);
 
-            if let Some(next) = node.next.as_mut() {
-                next.prev = node.prev
-            }
-
-            let elem = node.elem;
             self.current = node.next;
             self.len -= 1;
-            elem
+            node.elem
+        })
+    }
+
+    /// Remove the current element and return it. `O(1)`.  
+    /// The cursor will then point to the previous element.
+    /// ```
+    /// # use iterlist::IterList;
+    /// let mut list = IterList::from(vec![1, 2, 3]);
+    /// list.move_by(1);
+    /// assert_eq!(list.consume_backward(), Some(2));
+    /// assert_eq!(&format!("{:?}", list), "[1, 3]");
+    /// assert_eq!(list.get_cursor(), Some(&1));
+    /// ```
+    pub fn consume_backward(&mut self) -> Option<T> {
+        self.current.as_ptr().map(|node| unsafe {
+            let node = Box::from_raw(node);
+
+            node.prev.as_mut().map(|prev| prev.next = node.next);
+            node.next.as_mut().map(|next| next.prev = node.prev);
+
+            self.current = node.prev;
+            self.len -= 1;
+            self.index -= 1;
+            node.elem
         })
     }
 
@@ -545,7 +565,10 @@ impl<T: Clone> Clone for IterList<T> {
     /// assert_eq!(format!("{:?}", cloned), "[1, 2, 3]");
     /// ```
     fn clone(&self) -> Self {
-        let mut list = self.as_cursor().cloned().fold(Self::new(), |mut list, elem| {
+        let mut cursor = self.as_cursor();
+        cursor.move_to_front();
+
+        let mut list = cursor.cloned().fold(Self::new(), |mut list, elem| {
             list.push_next(elem);
             list
         });
@@ -584,7 +607,7 @@ impl<T> Drop for IterList<T> {
     #[inline]
     /// Drop the list. `O(n)`.
     fn drop(&mut self) {
-        while self.consume().is_some() {}
+        while self.consume_foward().is_some() {}
     }
 }
 
@@ -598,8 +621,35 @@ impl<T> Drop for IterList<T> {
 impl<T> Iterator for IterList<T> {
     type Item = T;
 
+    /// Internally this call is just `consume_foward`. `O(1)`.
+    /// ```
+    /// # use iterlist::IterList;
+    /// let list = IterList::from(vec![1, 2, 3]);
+    ///
+    /// // list moved
+    /// let num = list.fold(0, |acc, elem| acc + elem);
+    /// assert_eq!(num, 6);
+    /// ```
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        self.consume()
+        self.consume_foward()
+    }
+}
+
+impl<T> DoubleEndedIterator for IterList<T> {
+    /// Internally this call is just `consume_backward`. `O(1)`.
+    /// ```
+    /// # use iterlist::IterList;
+    /// let mut list = IterList::from(vec![1, 2, 3]);
+    ///
+    /// list.move_to_back();
+    ///
+    /// let two = list.nth_back(1);
+    /// assert_eq!(two, Some(2));
+    /// ```
+    #[inline]
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.consume_backward()
     }
 }
 
@@ -652,7 +702,7 @@ impl<T> FromIterator<T> for IterList<T> {
 /// A copy of a cursor of an IterList.  
 /// Allows for traversing the list without modifying the original.  
 ///
-/// Internally, the cursor is a pointer to the current element,
+/// Internally, the cursor is a fat pointer to the current element,
 /// so the size of a `Cursor` is two words.  
 /// ```
 /// # use iterlist::IterList;

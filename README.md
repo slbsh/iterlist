@@ -32,7 +32,7 @@ assert_eq!(cursor.next(), Some(&1));
 assert_eq!(list.get(1), Some(&1));
 
 list.move_by(2);
-list.consume();
+list.consume_forward();
 
 assert_eq!(format!("{:?}", list), "[-1, 1, 3]");
 
@@ -53,7 +53,6 @@ Pretty much any other case. (*lol*)
 It has all the disadvantages of a doubly linked list, and is even slower at many front/back operations.
 Instead of pointers to front and back, `IterList` keeps the cursor and it's index. Meaning O(1) operations work only around the cursor.  
 
-<br>
 
 ## Todos
 - [ ] `replace` - replace the element at the cursor with another.
@@ -63,5 +62,6 @@ Instead of pointers to front and back, `IterList` keeps the cursor and it's inde
 - [ ] `drain`   - remove a range of elements (around the cursor) from the list.
 - [ ] `splice`  - replace a range of elements (around the cursor) with another list.
 - [ ] `DoubleEndedIterator` for `Cursor`.
+- [ ] `Sync + Send` versions of the list and cursor.
 
 If ya wanna add any of these, feel free to!  
