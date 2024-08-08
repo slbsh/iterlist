@@ -10,33 +10,33 @@ A doubly linked list with a cursor based api.
 ```rust
 use iterlist::IterList;
 
-let mut list = IterList::new()
+let mut list = IterList::new();
 
 list.push_prev(-1);
 list.push_next(1);
 list.push_next(2);
-list.push_next(3)
+list.push_next(3);
 
-assert_eq!(format!("{:?}", list), "[-1, 1, 2, 3]")
+assert_eq!(format!("{:?}", list), "[-1, 1, 2, 3]");
 
 list.move_to(2);
-assert_eq!(list.get_cursor(), Some(&2))
+assert_eq!(list.get_cursor(), Some(&2));
 
 list.move_by(-2);
-assert_eq!(list.index(), 0)
+assert_eq!(list.index(), 0);
 
 let mut cursor = list.as_cursor();
 assert_eq!(cursor.next(), Some(&-1));
-assert_eq!(cursor.next(), Some(&1))
+assert_eq!(cursor.next(), Some(&1));
 
-assert_eq!(list.get(1), Some(&1))
+assert_eq!(list.get(1), Some(&1));
 
 list.move_by(2);
-list.consume()
+list.consume();
 
-assert_eq!(format!("{:?}", list), "[-1, 1, 3]")
+assert_eq!(format!("{:?}", list), "[-1, 1, 3]");
 
-let num = list.fold(0, |acc, elem| acc + elem)
+let num = list.fold(0, |acc, elem| acc + elem);
 
 assert_eq!(num, 3);
 ```
@@ -54,7 +54,6 @@ It has all the disadvantages of a doubly linked list, and is even slower at many
 Instead of pointers to front and back, `IterList` keeps the cursor and it's index. Meaning O(1) operations work only around the cursor.  
 
 <br>
-<br>
 
 ## Todos
 - [ ] `replace` - replace the element at the cursor with another.
@@ -63,5 +62,6 @@ Instead of pointers to front and back, `IterList` keeps the cursor and it's inde
 - [ ] `prepend` - prepend another list to the start of this one.
 - [ ] `drain`   - remove a range of elements (around the cursor) from the list.
 - [ ] `splice`  - replace a range of elements (around the cursor) with another list.
+- [ ] `DoubleEndedIterator` for `Cursor`.
 
 If ya wanna add any of these, feel free to!  
