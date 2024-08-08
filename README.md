@@ -1,9 +1,10 @@
-# IterList
+# Iter Who? IterList!
 
-A doubly linked list with a cursor based api.  
-*it's also an iterator!*  
+It's a doubly linked list with a cursor based api.  
+*also an iterator!*  
 
-`O(1)` pretty much everything (at the cursor).  
+`O(1)` pretty much everything (at and around the cursor).  
+Originally made it for [Shard](https://github.com/shard-org/shard)
 
 ## Example
 
@@ -42,15 +43,15 @@ assert_eq!(num, 3);
 ```
 
 ## Why would I want to use `IterList`?
-Short answer? *idk honestly.*  
+Short answer? *idk honestly.* You prob don't.  
 Long answer:
 - You're iterating over a list, and are removing/inserting elements as you go.
-- You want to have multiple independant cursors on the same list.
+- You want to have multiple independent cursors on the same list.
 - You need an iterator that you can move around in and modify.
 
 ## Why wouldn't I want to use `IterList`?
 Pretty much any other case. (*lol*)  
-It has all the disadvantages of a doubly linked list, and is even slower at many front/back operations.
+It has all the disadvantages of a doubly linked list, and is MUCH slower at many front/back operations.
 Instead of pointers to front and back, `IterList` keeps the cursor and it's index. Meaning O(1) operations work only around the cursor.  
 
 
