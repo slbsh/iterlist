@@ -443,6 +443,25 @@ impl<T> IterList<T> {
         })
     }
 
+    /// Replace the current element with a new one. `O(1)`.  
+    /// Returns the old element.  
+    /// If the list is empty, the new element will be inserted, and `None` returned.
+    /// ```
+    /// # use iterlist::IterList;
+    /// let mut list = IterList::from(vec![1, 2, 3]);
+    /// assert_eq!(list.replace_cursor(4), Some(1));
+    /// assert_eq!(format!("{:?}", list), "[4, 2, 3]");
+    /// ```
+    #[inline]
+    pub fn replace_cursor(&mut self, elem: T) -> Option<T> {
+        unsafe {
+            match self.current.as_mut() {
+                None => { self.push_next(elem); None }, 
+                Some(node) => Some(std::mem::replace(&mut node.elem, elem)),
+            }
+        }
+    }
+
     /// Get a ref to the current element. `O(1)`.
     /// ```
     /// # use iterlist::IterList;
