@@ -482,6 +482,67 @@ impl<T> IterList<T> {
         }
     }
 
+    /// Split the list after the cursor. `O(1)`.  
+    /// If the list is empty, or the cursor is at the end, `None` will be returned.  
+    /// ```
+    /// # use iterlist::IterList;
+    /// let mut list = IterList::from(vec![1, 2, 3]);
+    /// list.advance();
+    /// let new_list = list.split_after().unwrap();
+    ///
+    /// assert_eq!(format!("{:?}", list), "[1, 2]");
+    /// assert_eq!(format!("{:?}", new_list), "[3]");
+    /// assert_eq!(new_list.index(), 0);
+    /// ```
+    pub fn split_after(&mut self) -> Option<Self> {
+        unsafe {
+            self.current.as_ref().and_then(|c| c.next.as_ptr()).map(|next| {
+                let mut new = Self::new();
+
+                new.current = next;
+                new.len = self.len - self.index - 1;
+                self.len -= new.len;
+
+                (*self.current).next = ptr::null_mut();
+                (*new.current).prev = ptr::null_mut();
+
+                new
+            })
+        }
+    }
+
+    /// Split the list before the cursor. `O(1)`.
+    /// If the list is empty, or the cursor is at the front, `None` will be returned.
+    /// ```
+    /// # use iterlist::IterList;
+    /// let mut list = IterList::from(vec![1, 2, 3, 4]);
+    /// list.move_by(2);
+    /// let new_list = list.split_before().unwrap();
+    ///
+    /// assert_eq!(format!("{:?}", list), "[3, 4]");
+    /// assert_eq!(format!("{:?}", new_list), "[1, 2]");
+    /// assert_eq!(new_list.index(), 1);
+    /// assert_eq!(list.index(), 0);
+    /// ```
+    pub fn split_before(&mut self) -> Option<Self> {
+        unsafe {
+            self.current.as_ref().and_then(|c| c.prev.as_ptr()).map(|prev| {
+                let mut new = Self::new();
+
+                new.current = prev;
+                new.len = self.index;
+                self.len -= new.len;
+                self.index = 0;
+                new.index = new.len - 1;
+
+                (*self.current).prev = ptr::null_mut();
+                (*new.current).next = ptr::null_mut();
+
+                new
+            })
+        }
+    }
+
     /// Get a ref to the current element. `O(1)`.
     /// ```
     /// # use iterlist::IterList;
@@ -646,8 +707,6 @@ impl<T> Drop for IterList<T> {
     #[inline]
     /// Drop the list. `O(n)`.
     fn drop(&mut self) {
-        println!("{:?}", (self.current, self.len, self.index));
-        
         while self.consume_forward().is_some() {}
     }
 }

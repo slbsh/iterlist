@@ -55,8 +55,7 @@ Instead of pointers to front and back, `IterList` keeps the cursor and it's inde
 
 
 ## Todos
-- [x] `replace` - replace the element at the cursor with another.
-- [ ] `split`   - split the list at the cursor.
+- [x] `split`   - split the list at the cursor.
 - [ ] `append`  - append another list to the end of this one.
 - [ ] `prepend` - prepend another list to the start of this one.
 - [ ] `drain`   - remove a range of elements (around the cursor) from the list.
