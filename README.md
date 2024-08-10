@@ -61,7 +61,7 @@ Instead of pointers to front and back, `IterList` keeps the cursor and it's inde
 - [ ] `drain`   - remove a range of elements (around the cursor) from the list.
 - [ ] `splice`  - replace a range of elements (around the cursor) with another list.
 - [ ] `DoubleEndedIterator` for `Cursor`.
-- [ ] `Sync + Send` versions of the list and cursor.
-- [ ] `make_contiguous` - make the list contiguous in memory. (prob by allocating current elements to an arena)
+- [ ] `mod sync` - Sync + Send versions of the list and cursor.
+- [ ] `mod pool` - semi-pool allocated list for grouping elements into contiguous memory.
 
 If ya wanna add any of these, feel free to!  
