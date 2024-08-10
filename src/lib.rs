@@ -42,11 +42,12 @@
 
 #![allow(forbidden_lint_groups)]
 #![forbid(clippy::all)]
-#![allow(clippy::option_map_unit_fn, clippy::wrong_self_convention)]
+#![allow(clippy::option_map_unit_fn, clippy::wrong_self_convention, clippy::uninit_assumed_init)]
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::cmp::Ordering;
+use std::mem::{MaybeUninit, self, ManuallyDrop};
 use std::ptr;
 
 /// A doubly linked list. The `IterList` object is a fat pointer of a `Cursor + length`, which owns the underlying data.  
@@ -621,7 +622,120 @@ impl<T> IterList<T> {
             current: self.current,
         }
     }
+
+    /// Make the list continous in memory. `O(n)`.  
+    /// This allows you to take a high upfront cost to potentially make future reads faster.
+    ///
+    /// The returned list will not be able to have elements added or removed, as doing so could cause a use after free or memory leak.  
+    /// (the memory has to be deallocated all at once)  
+    /// 
+    /// In the future this will be moved and expanded into a `pool` module.
+    /// ```
+    /// # use iterlist::IterList;
+    /// let list = IterList::from(vec![1, 2, 3]);
+    /// let mut contigous = list.into_continous();
+    ///
+    /// assert_eq!(format!("{:?}", contigous), "[1, 2, 3]");
+    /// assert_eq!(contigous.get_mut(1), Some(&mut 2));
+    ///
+    /// let num = contigous.as_cursor().fold(0, |acc, elem| acc + elem);
+    /// assert_eq!(num, 6);
+    /// ```
+    pub fn into_continous(mut self) -> ContinousIterList<T> {
+        unsafe {
+            let mut vec = Vec::<Node<T>>::with_capacity(self.len);
+            let vec_ptr = vec.as_mut_ptr();
+
+            let (len, index) = (self.len, self.index);
+
+            self.move_to_front();
+
+            let mut prev = ptr::null_mut();
+            let mut i = 0;
+
+            while let Some((elem, _)) = self.consume_forward() {
+                vec.push(Node { next: ptr::null_mut(), prev, elem, });
+
+                prev.as_ptr().map(|p| (*p).next = vec_ptr.add(i));
+                prev = vec_ptr.add(i);
+
+                i += 1;
+            }
+
+            mem::forget(vec);
+
+            ContinousIterList(ManuallyDrop::new(IterList {
+                current: vec_ptr.add(index),
+                len, index,
+                _boo: PhantomData,
+            }))
+        }
+    }
 }
+
+/// An `IterList` packed into continous memory.  
+/// Cannot have elements added or removed.  
+pub struct ContinousIterList<T>(ManuallyDrop<IterList<T>>);
+
+impl<T> std::ops::Deref for ContinousIterList<T> {
+    type Target = IterList<T>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> Drop for ContinousIterList<T> {
+    #[inline]
+    fn drop(&mut self) {
+        unsafe {
+            std::alloc::dealloc(self.0.current as *mut u8, std::alloc::Layout::array::<Node<T>>(self.0.len).unwrap());
+        }
+    }
+}
+
+impl<T> ContinousIterList<T> {
+    #[inline]
+    pub fn get_mut(&mut self, offset: isize) -> Option<&mut T> {
+        self.0.get_mut(offset)
+    }
+
+    #[inline]
+    pub fn cursor_mut(&mut self) -> Option<&mut T> {
+        self.0.get_cursor_mut()
+    }
+
+    /// Convert a `ContinousIterList` back into an `IterList`. `O(n)`.
+    pub fn into_iterlist(self) -> IterList<T> {
+        let mut new = IterList::new();
+
+        if self.0.len() == 0 {
+            return new;
+        }
+
+        unsafe {
+            let mut current = self.0.current;
+            while let Some(node) = current.as_ptr() {
+                let replace: T = MaybeUninit::uninit().assume_init();
+                new.push_next(mem::replace(&mut (*node).elem, replace));
+                current = (*node).next;
+            }
+        }
+
+        new.move_to(self.0.index);
+
+        new
+    }
+}
+
+impl<T: Debug> Debug for ContinousIterList<T> {
+    #[inline]
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:?}", &*self.0)
+    }
+}
+
 
 
 
@@ -778,6 +892,25 @@ impl<T> From<Vec<T>> for IterList<T> {
     }
 }
 
+impl<T: Clone> From<&[T]> for IterList<T> {
+    /// Create a new list from a slice. `O(n)`.  
+    /// Cursor is set to the front of the list.
+    /// ```
+    /// # use iterlist::IterList;
+    /// let list = IterList::from(&[1, 2, 3]);
+    /// assert_eq!(format!("{:?}", list), "[1, 2, 3]");
+    /// assert_eq!(list.get_cursor(), Some(&1));
+    /// ```
+    fn from(slice: &[T]) -> Self {
+        let mut list = slice.iter().cloned().fold(Self::new(), |mut list, elem| {
+            list.push_next(elem);
+            list
+        });
+        list.move_to_front();
+        list
+    }
+}
+
 impl<T> FromIterator<T> for IterList<T> {
     /// Create a new list from an iterator. `O(n)`.  
     /// Cursor is set to the front of the list.
@@ -831,6 +964,7 @@ pub struct Cursor<'i, T> {
 impl<'i, T> Iterator for Cursor<'i, T> {
     type Item = &'i T;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         unsafe {
             self.current.as_ref().map(|c| {
