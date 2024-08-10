@@ -1056,6 +1056,12 @@ impl<'i, T> std::ops::Index<isize> for Cursor<'i, T> {
     }
 }
 
+impl<T: Debug> Debug for Cursor<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}: {:?}", self.index, self.get_cursor())
+    }
+}
+
 
 
 
