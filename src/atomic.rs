@@ -54,14 +54,15 @@ impl<T> IterList<T> {
     /// ```
     /// # use iterlist::atomic::IterList;
     /// let mut list = IterList::new();
-    /// list.insert_next(1);
-    /// list.insert_next(2);
-    /// list.insert_next(3);
+    /// let _ = list.insert_next(1);
+    /// let _ = list.insert_next(2);
+    /// let _ = list.insert_next(3);
     /// 
     /// assert_eq!(list.get_cursor(), Some(&1));
     /// assert_eq!(&format!("{:?}", list), "[1, 3, 2]");
     /// ```
-    pub fn insert_next(&self, elem: T) -> bool {
+    #[must_use]
+    pub fn insert_next(&self, elem: T) -> Result<(), T> {
         let new = Box::into_raw(Box::new(Node {
             prev: AtomicPtr::default(),
             next: AtomicPtr::default(),
@@ -73,38 +74,38 @@ impl<T> IterList<T> {
                 Some(current) => {
                     if let Some(next) = (*current).next.load_ptr(Acquire) {
                         (*next).prev.store(new, Release);
-                        (*new).next.store(next, Release);
+                        (*new).next.store(next, Relaxed);
                     }
 
                     (*current).next.store(new, Release);
                     (*new).prev.store(current, Release);
                 },
                 None => if self.current.compare_exchange(ptr::null_mut(), new, AcqRel, Acquire).is_err() {
-                    mem::drop(Box::from_raw(new)); // dealloc
-                    return false;
+                    return Err(Box::from_raw(new).elem);
                 },
             }
         }
 
         self.len.fetch_add(1, AcqRel);
-        true
+        Ok(())
     }
 
     /// Insert an element before the cursor, retaining current position. `O(1)`.
     /// If the list is empty it will be inserted at index 0.
     ///
-    /// Returns `false` if the element could not be inserted.
+    /// Returns `Err(T)` if the element could not be inserted.
     /// ```
     /// # use iterlist::atomic::IterList;
     /// let mut list = IterList::new();
-    /// list.insert_prev(1);
-    /// list.insert_prev(2);
-    /// list.insert_prev(3);
+    /// let _ = list.insert_prev(1);
+    /// let _ = list.insert_prev(2);
+    /// let _ = list.insert_prev(3);
     ///
     /// assert_eq!(list.get_cursor(), Some(&1));
     /// assert_eq!(&format!("{:?}", list), "[2, 3, 1]");
     /// ```
-    pub fn insert_prev(&self, elem: T) -> bool {
+    #[must_use]
+    pub fn insert_prev(&self, elem: T) -> Result<(), T> {
         let new = Box::into_raw(Box::new(Node {
             prev: AtomicPtr::default(),
             next: AtomicPtr::default(),
@@ -116,7 +117,7 @@ impl<T> IterList<T> {
                 Some(current) => {
                     if let Some(prev) = (*current).prev.load_ptr(Acquire) {
                         (*prev).next.store(new, Release);
-                        (*new).prev.store(prev, Release);
+                        (*new).prev.store(prev, Relaxed);
                     }
 
                     (*current).prev.store(new, Release);
@@ -125,60 +126,65 @@ impl<T> IterList<T> {
                     self.index.fetch_add(1, Release);
                 },
                 None => if self.current.compare_exchange(ptr::null_mut(), new, AcqRel, Acquire).is_err() {
-                    mem::drop(Box::from_raw(new)); // dealloc
-                    return false;
+                    return Err(Box::from_raw(new).elem);
                 },
             }
         }
 
         self.len.fetch_add(1, AcqRel);
-        true
+        Ok(())
     }
 
     /// Push an element after the cursor, moving the cursor to it. `O(1)`.  
     /// If the list is empty it will be inserted at index 0.
     ///
-    /// Returns `false` if the element could not be pushed.
+    /// Returns `false` if could not advance the cursor.
+    /// Returns `T` if the element could not be pushed.
+    ///
     /// ```
     /// # use iterlist::atomic::IterList;
     /// let mut list = IterList::new();
-    /// list.push_next(1);
-    /// list.push_next(2);
-    /// list.push_next(3);
+    /// let _ = list.push_next(1);
+    /// let _ = list.push_next(2);
+    /// let _ = list.push_next(3);
     ///
     /// assert_eq!(list.get_cursor(), Some(&3));
     /// assert_eq!(&format!("{:?}", list), "[1, 2, 3]");
     /// ```
-    pub fn push_next(&self, elem: T) -> bool {
+    #[must_use]
+    pub fn push_next(&self, elem: T) -> Result<bool, T> {
         if self.current.load(Relaxed).is_null() {
-            return self.insert_next(elem);
+            return self.insert_next(elem).map(|_| true);
         }
 
-        if !self.insert_next(elem) { return false; }
-        self.advance()
+        self.insert_next(elem)?;
+        self.advance().map_or_else(|_| Ok(false), |_| Ok(true))
     }
 
     /// Push an element before the cursor, moving the cursor to it. `O(1)`.
     /// If the list is empty it will be inserted at index 0.
     ///
-    /// Returns `false` if the element could not be pushed.
+    /// Returns `false` if could not advance the cursor.
+    /// Returns `T` if the element could not be pushed.
+    ///
     /// ```
     /// # use iterlist::atomic::IterList;
     /// let mut list = IterList::new();
-    /// list.push_prev(1);
-    /// list.push_prev(2);
-    /// list.push_prev(3);
+    /// let _ = list.push_prev(1);
+    /// let _ = list.push_prev(2);
+    /// let _ = list.push_prev(3);
     ///
     /// assert_eq!(list.get_cursor(), Some(&3));
     /// assert_eq!(&format!("{:?}", list), "[3, 2, 1]");
     /// ```
-    pub fn push_prev(&self, elem: T) -> bool {
+    #[must_use]
+    pub fn push_prev(&self, elem: T) -> Result<bool, T> {
         if self.current.load(Relaxed).is_null() {
-            return self.insert_prev(elem);
+            return self.insert_prev(elem).map(|_| true);
         }
 
-        if !self.insert_prev(elem) { return false; }
-        self.retreat()
+        self.insert_prev(elem)?;
+        self.retreat().map_or_else(|_| Ok(false), |_| Ok(true))
     }
 
     /// Move the cursor to the front of the list. `O(n)`.  
@@ -186,9 +192,9 @@ impl<T> IterList<T> {
     /// ```
     /// # use iterlist::atomic::IterList;
     /// let mut list = IterList::new();
-    /// list.push_next(1);
-    /// list.push_next(2);
-    /// list.push_next(3);
+    /// let _ = list.push_next(1);
+    /// let _ = list.push_next(2);
+    /// let _ = list.push_next(3);
     ///
     /// assert_eq!(list.get_cursor(), Some(&3));
     ///
@@ -237,26 +243,44 @@ impl<T> IterList<T> {
     }
 
     /// Move the cursor to the specified index. `O(n)`.
-    /// If the index is out of bounds the cursor will be moved to the edge, 
-    /// and `false` will be returned.
+    /// If the index is out of bounds the cursor will be moved to the edge, and `false` will be returned.
+    /// Returns `Err(())` if the cursor could not be moved.
     /// ```
     /// # use iterlist::atomic::IterList;
     /// let mut list = IterList::from(vec![1, 2, 3]);
     /// list.move_to(1);
     /// assert_eq!(list.get_cursor(), Some(&2));
     /// ```
-    #[inline]
-    pub fn move_to(&self, index: usize) -> bool {
+    #[must_use]
+    pub fn move_to(&self, index: usize) -> Result<bool, ()> {
         match self.index.load(Relaxed).cmp(&index) {
-            Ordering::Greater => (0..self.index.load(Relaxed) - index).fold(true, |_, _| self.retreat()),
-            Ordering::Less    => (0..index - self.index.load(Relaxed)).fold(true, |_, _| self.advance()),
-            Ordering::Equal   => true,
+            Ordering::Greater => {
+                for _ in 0..index - self.index.load(Relaxed) {
+                    match self.retreat() {
+                        Ok(false) => return Ok(false),
+                        Err(_)    => return Err(()),
+                        _         => continue,
+                    }
+                }
+            },
+            Ordering::Less    => {
+                for _ in 0..index - self.index.load(Relaxed) {
+                    match self.advance() {
+                        Ok(false) => return Ok(false),
+                        Err(_)    => return Err(()),
+                        _         => continue,
+                    }
+                }
+            },
+            _ => (),
         }
+        Ok(true)
     }
 
 
     /// Move the cursor one step forward. `O(1)`.  
-    /// Returns `false` if the cursor could not be moved.
+    /// Returns `false` if the cursor is at the edge.
+    /// Returns `Err(())` if the cursor could not be moved.
     /// ```
     /// # use iterlist::atomic::IterList;
     /// let mut list = IterList::from(vec![1, 2, 3]);
@@ -265,19 +289,24 @@ impl<T> IterList<T> {
     /// list.advance();
     /// assert_eq!(list.get_cursor(), Some(&2));
     /// ```
-    #[inline]
-    pub fn advance(&self) -> bool {
+    #[must_use]
+    pub fn advance(&self) -> Result<bool, ()> {
         unsafe {
             let current = self.current.load(Acquire);
-            current.as_ref().and_then(|c| c.next.load_ptr(Acquire)).map(|c| {
+            match current.as_ref().and_then(|c| c.next.load_ptr(Acquire)).map(|c| {
                 self.index.fetch_add(1, Release);
-                self.current.compare_exchange(current, c, Acquire, Relaxed).ok()
-            }).is_some()
+                self.current.compare_exchange(current, c, Acquire, Relaxed).map_or(Err(()), |_| Ok(true))
+            }) {
+                Some(Ok(b))  => Ok(b),
+                Some(Err(_)) => Err(()),
+                None         => Ok(false),
+            }
         }
     }
 
     /// Move the cursor one step backward. `O(1)`.  
-    /// Returns `false` if the cursor could not be moved.
+    /// Returns `false` if the cursor is at the edge,
+    /// Returns `Err(())` if the cursor could not be moved.
     /// ```
     /// # use iterlist::atomic::IterList;
     /// let mut list = IterList::from(vec![1, 2, 3]);
@@ -288,14 +317,18 @@ impl<T> IterList<T> {
     /// list.retreat();
     /// assert_eq!(list.get_cursor(), Some(&2));
     /// ```
-    #[inline]
-    pub fn retreat(&self) -> bool {
+    #[must_use]
+    pub fn retreat(&self) -> Result<bool, ()> {
         unsafe {
             let current = self.current.load(Acquire);
-            current.as_ref().and_then(|c| c.prev.load_ptr(Acquire)).map(|prev| {
+            match current.as_ref().and_then(|c| c.prev.load_ptr(Acquire)).map(|prev| {
                 self.index.fetch_sub(1, Release);
-                self.current.compare_exchange(current, prev, Acquire, Relaxed).ok()
-            }).is_some()
+                self.current.compare_exchange(current, prev, Acquire, Relaxed).map_or(Err(()), |_| Ok(true))
+            }) {
+                Some(Ok(b))  => Ok(b),
+                Some(Err(_)) => Err(()),
+                None         => Ok(false),
+            }
         }
     }
 
@@ -313,77 +346,95 @@ impl<T> IterList<T> {
     /// assert_eq!(list.index(), 0);
     /// assert_eq!(list.get_cursor(), Some(&1));
     ///
-    /// assert!(!list.move_by(10));
+    /// assert!(!list.move_by(10).unwrap());
     /// assert_eq!(list.index(), 2);
     /// ```
-    #[inline]
-    pub fn move_by(&self, offset: isize) -> bool {
+    #[must_use]
+    pub fn move_by(&self, offset: isize) -> Result<bool, ()> {
         match offset.cmp(&0) {
-            Ordering::Greater => (0..offset ).fold(true, |_, _| self.advance()),
-            Ordering::Less    => (0..-offset).fold(true, |_, _| self.retreat()),
-            Ordering::Equal   => true,
+            Ordering::Greater => {
+                for _ in 0..offset {
+                    match self.advance() {
+                        Ok(false) => return Ok(false),
+                        Err(_)    => return Err(()),
+                        _         => continue,
+                    }
+                }
+            },
+            Ordering::Less    => {
+                for _ in 0..-offset {
+                    match self.retreat() {
+                        Ok(false) => return Ok(false),
+                        Err(_)    => return Err(()),
+                        _         => continue,
+                    }
+                }
+            },
+            _ => (),
         }
+
+        Ok(true)
     }
 
-    /// Get a ref to an element at the given offset. `O(n)`.
-    /// Returns `None` if the offset is out of bounds, or if another thread modified the value
-    /// during the function's run time.
+    /// Get a ref to an element at the given offset. `O(n)`.  
+    /// Returns `None` if the offset is out of bounds; ie. the value doesnt exist.  
+    /// Returns `Err(())` if another thread modified the value during the function's run time.
     /// ```
     /// # use iterlist::atomic::IterList;
     /// let list = IterList::from(vec![1, 2, 3]);
     /// assert_eq!(list.get_cursor(), Some(&1));
-    /// assert_eq!(list.get(1), Some(&2));
-    /// assert_eq!(list.get(-1), None);
+    /// assert_eq!(list.get(1), Ok(Some(&2)));
+    /// assert_eq!(list.get(-1), Ok(None));
     /// ```
-    pub fn get(&self, offset: isize) -> Option<&T> {
+    pub fn get(&self, offset: isize) -> Result<Option<&T>, ()> {
         let index = self.index.load(Relaxed);
         offset.checked_abs()
             .and_then(|s| (s > index as isize).into())
-            .and_then(|_| (index as isize + offset > self.len.load(Relaxed) as isize).into())?;
+            .and_then(|_| (index as isize + offset > self.len.load(Relaxed) as isize).into()).ok_or(())?;
 
-        let current = self.current.load_ptr(Acquire)?;
+        let current = self.current.load_ptr(Acquire).ok_or(())?;
         let mut ptr = current;
 
         unsafe {
             match offset.cmp(&0) {
                 Ordering::Greater => (0.. offset).for_each(|_| {ptr.as_ref().map(|c| ptr = c.next.load(Acquire)); }),
                 Ordering::Less    => (0..-offset).for_each(|_| {ptr.as_ref().map(|c| ptr = c.prev.load(Acquire)); }),
-                Ordering::Equal   => return self.get_cursor(),
+                Ordering::Equal   => return Ok(self.get_cursor()),
             }
 
-            if self.current.load(Acquire) != current { return None; }
-            ptr.as_ref().map(|c| &c.elem )
+            if self.current.load(Acquire) != current { return Err(()); }
+            Ok(ptr.as_ref().map(|c| &c.elem ))
         }
     }
 
-    /// Get a mut ref to an element at the given offset. `O(n)`.
-    /// Returns `None` if the offset is out of bounds, or if another thread modified the value
-    /// during the function's run time.
+    /// Get a mut ref to an element at the given offset. `O(n)`.  
+    /// Returns `None` if the offset is out of bounds; ie. the value doesnt exist.  
+    /// Returns `Err(())` if another thread modified the value during the function's run time.
     /// ```
     /// # use iterlist::atomic::IterList;
     /// let mut list = IterList::from(vec![1, 2, 3]);
     ///
-    /// *list.get_mut(1).unwrap() = 4;
+    /// *list.get_mut(1).unwrap().unwrap() = 4;
     /// assert_eq!(format!("{:?}", list), "[1, 4, 3]");
     /// ```
-    pub fn get_mut(&self, offset: isize) -> Option<&mut T> {
+    pub fn get_mut(&self, offset: isize) -> Result<Option<&mut T>, ()> {
         let index = self.index.load(Relaxed);
         offset.checked_abs()
             .and_then(|s| (s > index as isize).into())
-            .and_then(|_| (index as isize + offset > self.len.load(Relaxed) as isize).into())?;
+            .and_then(|_| (index as isize + offset > self.len.load(Relaxed) as isize).into()).ok_or(())?;
 
-        let current = self.current.load_ptr(Acquire)?;
+        let current = self.current.load_ptr(Acquire).ok_or(())?;
         let mut ptr = current;
 
         unsafe {
             match offset.cmp(&0) {
                 Ordering::Greater => (0.. offset).for_each(|_| {ptr.as_ref().map(|c| ptr = c.next.load(Acquire)); }),
                 Ordering::Less    => (0..-offset).for_each(|_| {ptr.as_ref().map(|c| ptr = c.prev.load(Acquire)); }),
-                Ordering::Equal   => return self.get_cursor_mut(),
+                Ordering::Equal   => return Ok(self.get_cursor_mut()),
             }
 
-            if self.current.load(Acquire) != current { return None; }
-            ptr.as_mut().map(|c| &mut c.elem )
+            if self.current.load(Acquire) != current { return Err(()); }
+            Ok(ptr.as_mut().map(|c| &mut c.elem ))
         }
     }
 
@@ -463,15 +514,15 @@ impl<T> IterList<T> {
     /// ```
     /// # use iterlist::atomic::IterList;
     /// let mut list = IterList::from(vec![1, 2, 3]);
-    /// assert_eq!(list.replace_cursor(4), Some(1));
+    /// assert_eq!(list.replace_cursor(4), Ok(Some(1)));
     /// assert_eq!(format!("{:?}", list), "[4, 2, 3]");
     /// ```
     #[inline]
-    pub fn replace_cursor(&mut self, elem: T) -> Option<T> {
+    pub fn replace_cursor(&mut self, elem: T) -> Result<Option<T>, T> {
         unsafe {
             match self.current.load_ptr(SeqCst) {
-                None => { self.push_next(elem); None }, 
-                Some(node) => Some(std::mem::replace(&mut (*node).elem, elem)),
+                None => { self.insert_next(elem)?; Ok(None) }, 
+                Some(node) => Ok(Some(std::mem::replace(&mut (*node).elem, elem))),
             }
         }
     }
@@ -631,7 +682,7 @@ impl<T: Debug> Debug for IterList<T> {
         while i < (self.len() as isize) {
             let element = self.get(base + i);
 
-            if let Some(element) = element {
+            if let Ok(Some(element)) = element {
                 write!(f, "{:?}", element)?;
             }
 
@@ -718,7 +769,7 @@ impl<T> From<Vec<T>> for IterList<T> {
     /// ```
     fn from(vec: Vec<T>) -> Self {
         let list = vec.into_iter().fold(Self::new(), |list, elem| {
-            list.push_next(elem);
+            unsafe { list.push_next(elem).unwrap_unchecked(); }
             list
         });
         list.move_to_front();
@@ -738,7 +789,7 @@ impl<T: Clone> From<&[T]> for IterList<T> {
     /// ```
     fn from(slice: &[T]) -> Self {
         let list = slice.iter().cloned().fold(Self::new(), |list, elem| {
-            list.push_next(elem);
+            unsafe { list.push_next(elem).unwrap_unchecked(); }
             list
         });
         list.move_to_front();
@@ -757,7 +808,7 @@ impl<T> FromIterator<T> for IterList<T> {
     /// ```
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let list = iter.into_iter().fold(Self::new(), |list, elem| {
-            list.push_next(elem);
+            unsafe { list.push_next(elem).unwrap_unchecked(); }
             list
         });
         list.move_to_front();
@@ -837,24 +888,24 @@ impl<'t, T: Send + Sync> Cursor<'t, T> {
     /// let list = IterList::from(vec![1, 2, 3]);
     /// let cursor = list.as_cursor();
     ///
-    /// *cursor.get_mut(1).unwrap() = 4;
+    /// *cursor.get_mut(1).unwrap().unwrap() = 4;
     /// assert_eq!(format!("{:?}", list), "[1, 4, 3]");
     /// ```
-    pub fn get_mut(&self, offset: isize) -> Option<&mut T> {
-        offset.checked_abs().and_then(|s| (s > self.index.load(Relaxed) as isize).into())?;
+    pub fn get_mut(&self, offset: isize) -> Result<Option<&mut T>, ()> {
+        offset.checked_abs().and_then(|s| (s > self.index.load(Relaxed) as isize).into()).ok_or(())?;
 
-        let current = self.current.load_ptr(Acquire)?;
+        let current = self.current.load_ptr(Acquire).ok_or(())?;
         let mut ptr = current;
 
         unsafe {
             match offset.cmp(&0) {
                 Ordering::Greater => (0.. offset).for_each(|_| {ptr.as_ref().map(|c| ptr = c.next.load(Acquire)); }),
                 Ordering::Less    => (0..-offset).for_each(|_| {ptr.as_ref().map(|c| ptr = c.prev.load(Acquire)); }),
-                Ordering::Equal   => return self.get_cursor_mut(),
+                Ordering::Equal   => return Ok(self.get_cursor_mut()),
             }
 
-            if self.current.load(Acquire) != current { return None; }
-            ptr.as_mut().map(|c| &mut c.elem )
+            if self.current.load(Acquire) != current { return Err(()); }
+            Ok(ptr.as_mut().map(|c| &mut c.elem ))
         }
     }
 }
@@ -950,8 +1001,8 @@ impl<'t, T> Cursor<'t, T> {
     }
 
     /// Move the cursor to the specified index. `O(n)`.
-    /// If the index is out of bounds the cursor will be moved to the edge, 
-    /// and `false` will be returned.
+    /// If the index is out of bounds the cursor will be moved to the edge, and `false` will be returned.
+    /// Returns `Err(())` if the cursor could not be moved.
     /// ```
     /// # use iterlist::IterList;
     /// let list = IterList::from(vec![1, 2, 3]);
@@ -960,19 +1011,36 @@ impl<'t, T> Cursor<'t, T> {
     /// cursor.move_to(1);
     /// assert_eq!(cursor.get_cursor(), Some(&2));
     /// ```
-    /// # Panics
-    /// Panics if the index is out of bounds.
-    #[inline]
-    pub fn move_to(&self, index: usize) -> bool {
+    #[must_use]
+    pub fn move_to(&self, index: usize) -> Result<bool, ()> {
         match self.index.load(Relaxed).cmp(&index) {
-            Ordering::Greater => (0..self.index.load(Relaxed) - index).fold(true, |_, _| self.retreat()),
-            Ordering::Less    => (0..index - self.index.load(Relaxed)).fold(true, |_, _| self.advance()),
-            Ordering::Equal   => true,
+            Ordering::Greater => {
+                for _ in 0..index - self.index.load(Relaxed) {
+                    match self.retreat() {
+                        Ok(false) => return Ok(false),
+                        Err(_)    => return Err(()),
+                        _         => continue,
+                    }
+                }
+            },
+            Ordering::Less    => {
+                for _ in 0..index - self.index.load(Relaxed) {
+                    match self.advance() {
+                        Ok(false) => return Ok(false),
+                        Err(_)    => return Err(()),
+                        _         => continue,
+                    }
+                }
+            },
+            _ => (),
         }
+        Ok(true)
     }
 
+
     /// Move the cursor one step forward. `O(1)`.  
-    /// Returns `false` if the cursor could not be moved.
+    /// Returns `false` if the cursor is at the edge.
+    /// Returns `Err(())` if the cursor could not be moved.
     /// ```
     /// # use iterlist::IterList;
     /// let list = IterList::from(vec![1, 2, 3]);
@@ -983,19 +1051,24 @@ impl<'t, T> Cursor<'t, T> {
     /// cursor.advance();
     /// assert_eq!(cursor.get_cursor(), Some(&2));
     /// ```
-    #[inline]
-    pub fn advance(&self) -> bool {
+    #[must_use]
+    pub fn advance(&self) -> Result<bool, ()> {
         unsafe {
             let current = self.current.load(Acquire);
-            current.as_ref().and_then(|c| c.next.load_ptr(Acquire)).map(|c| {
+            match current.as_ref().and_then(|c| c.next.load_ptr(Acquire)).map(|c| {
                 self.index.fetch_add(1, Release);
-                self.current.compare_exchange(current, c, Acquire, Relaxed).ok()
-            }).is_some()
+                self.current.compare_exchange(current, c, Acquire, Relaxed).map_or(Err(()), |_| Ok(true))
+            }) {
+                Some(Ok(b))  => Ok(b),
+                Some(Err(_)) => Err(()),
+                None         => Ok(false),
+            }
         }
     }
 
     /// Move the cursor one step backward. `O(1)`.  
-    /// Returns `false` if the cursor could not be moved.
+    /// Returns `false` if the cursor is at the edge,
+    /// Returns `Err(())` if the cursor could not be moved.
     /// ```
     /// # use iterlist::IterList;
     /// let list = IterList::from(vec![1, 2, 3]);
@@ -1007,14 +1080,18 @@ impl<'t, T> Cursor<'t, T> {
     /// cursor.retreat();
     /// assert_eq!(cursor.get_cursor(), Some(&2));
     /// ```
-    #[inline]
-    pub fn retreat(&self) -> bool {
+    #[must_use]
+    pub fn retreat(&self) -> Result<bool, ()> {
         unsafe {
             let current = self.current.load(Acquire);
-            current.as_ref().and_then(|c| c.prev.load_ptr(Acquire)).map(|prev| {
+            match current.as_ref().and_then(|c| c.prev.load_ptr(Acquire)).map(|prev| {
                 self.index.fetch_sub(1, Release);
-                self.current.compare_exchange(current, prev, Acquire, Relaxed).ok()
-            }).is_some()
+                self.current.compare_exchange(current, prev, Acquire, Relaxed).map_or(Err(()), |_| Ok(true))
+            }) {
+                Some(Ok(b))  => Ok(b),
+                Some(Err(_)) => Err(()),
+                None         => Ok(false),
+            }
         }
     }
 
@@ -1035,15 +1112,31 @@ impl<'t, T> Cursor<'t, T> {
     /// cursor.move_by(10);
     /// assert_eq!(cursor.index(), 2);
     /// ```
-    /// # Panics
-    /// Panics if the offset is out of bounds.
-    #[inline]
-    pub fn move_by(&self, offset: isize) -> bool {
+    #[must_use]
+    pub fn move_by(&self, offset: isize) -> Result<bool, ()> {
         match offset.cmp(&0) {
-            Ordering::Greater => (0..offset ).fold(true, |_, _| self.advance()),
-            Ordering::Less    => (0..-offset).fold(true, |_, _| self.retreat()),
-            Ordering::Equal   => true,
+            Ordering::Greater => {
+                for _ in 0..offset {
+                    match self.advance() {
+                        Ok(false) => return Ok(false),
+                        Err(_)    => return Err(()),
+                        _         => continue,
+                    }
+                }
+            },
+            Ordering::Less    => {
+                for _ in 0..-offset {
+                    match self.retreat() {
+                        Ok(false) => return Ok(false),
+                        Err(_)    => return Err(()),
+                        _         => continue,
+                    }
+                }
+            },
+            _ => (),
         }
+
+        Ok(true)
     }
 
     /// Get a ref to an element at the given offset. `O(n)`.
@@ -1057,21 +1150,21 @@ impl<'t, T> Cursor<'t, T> {
     /// assert_eq!(cursor.get(1), Some(&2));
     /// assert_eq!(cursor.get(-1), None);
     /// ```
-    pub fn get(&self, offset: isize) -> Option<&T> {
-        offset.checked_abs().and_then(|s| (s > self.index.load(Relaxed) as isize).into())?;
+    pub fn get(&self, offset: isize) -> Result<Option<&T>, ()> {
+        offset.checked_abs().and_then(|s| (s > self.index.load(Relaxed) as isize).into()).ok_or(())?;
 
-        let current = self.current.load_ptr(Acquire)?;
+        let current = self.current.load_ptr(Acquire).ok_or(())?;
         let mut ptr = current;
 
         unsafe {
             match offset.cmp(&0) {
                 Ordering::Greater => (0.. offset).for_each(|_| {ptr.as_ref().map(|c| ptr = c.next.load(Acquire)); }),
                 Ordering::Less    => (0..-offset).for_each(|_| {ptr.as_ref().map(|c| ptr = c.prev.load(Acquire)); }),
-                Ordering::Equal   => return self.get_cursor(),
+                Ordering::Equal   => return Ok(self.get_cursor()),
             }
 
-            if self.current.load(Acquire) != current { return None; }
-            ptr.as_ref().map(|c| &c.elem )
+            if self.current.load(Acquire) != current { return Err(()); }
+            Ok(ptr.as_ref().map(|c| &c.elem ))
         }
     }
 }
@@ -1079,9 +1172,12 @@ impl<'t, T> Cursor<'t, T> {
 impl<'i, T> std::ops::Deref for Cursor<'i, T> {
     type Target = T;
 
+    /// Essentially equivalent to `get_cursor`. `O(1)`.
+    /// # Panics
+    /// Panics if the cursor is out of bounds.
     #[inline]
     fn deref(&self) -> &Self::Target {
-        self.get_cursor().unwrap()
+        self.get_cursor().unwrap_or_else(|| panic!("Cursor out of bounds"))
     }
 }
 
@@ -1094,11 +1190,19 @@ impl<'i, T> std::ops::Index<isize> for Cursor<'i, T> {
     /// Panics if the index is out of bounds.
     #[inline]
     fn index(&self, index: isize) -> &Self::Output {
-        self.get(index).unwrap_or_else(|| panic!("Index out of bounds"))
+        self.get(index)
+            .unwrap_or_else(|_| panic!("Index out of bounds"))
+            .unwrap_or_else(| | panic!("Index out of bounds"))
     }
 }
 
 impl<T: Debug> Debug for Cursor<'_, T> {
+    /// ```
+    /// # use iterlist::IterList;
+    /// let list = IterList::from(vec![1, 2, 3]);
+    /// let mut cursor = list.as_cursor();
+    /// assert_eq!(format!("{:?}", cursor), "0: Some(1)");
+    /// ```
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}: {:?}", self.index.load(Relaxed), self.get_cursor())
     }

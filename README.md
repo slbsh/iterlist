@@ -12,6 +12,9 @@ Do you want to do some lock-free shenanigans?
 *slaps hood*  
 Well this baby's now `Send + Sync` and can mutate atomically across threads!  
 
+~~Using Result<Option<Result<Result ...~~   
+![Hollow](./hollow.png)
+
 ## Example
 
 ```rust
