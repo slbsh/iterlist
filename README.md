@@ -6,6 +6,12 @@ It's a doubly linked list with a cursor based api.
 `O(1)` pretty much everything (at and around the cursor).  
 Originally made it for [Shard](https://github.com/shard-org/shard), but thought it could be useful to someone else.  
 
+**Now Featuring:** the `atomic` module!  
+Are you bored of performant data structures?  
+Do you want to do some lock-free shenanigans?  
+*slaps hood*  
+Well this baby's now `Send + Sync` and can mutate atomically across threads!  
+
 ## Example
 
 ```rust
@@ -44,24 +50,20 @@ assert_eq!(num, 3);
 ```
 
 ## Why would I want to use `IterList`?
-- You're iterating over a list, and are removing/inserting elements as you go.
+- You're iterating over a list, and are removing/inserting elements as you go. 
+    (In my tests it was marginally better than `std::collections::VecDeque`)
 - You want to have multiple independent cursors on the same list.
 - You need an iterator that you can move around in and modify.
-
-## Why wouldn't I want to use `IterList`?
-Pretty much any other case. (*lol*)  
-It has all the disadvantages of a doubly linked list, and is MUCH slower at many front/back operations.
-Instead of pointers to front and back, `IterList` keeps the cursor and it's index. Meaning O(1) operations work only around the cursor.  
-
+- It's also a noticably faster than `std::collections::LinkedList` in most cases!
 
 ## Todos
-- [x] `split`   - split the list at the cursor.
 - [ ] `append`  - append another list to the end of this one.
 - [ ] `prepend` - prepend another list to the start of this one.
 - [ ] `drain`   - remove a range of elements (around the cursor) from the list.
 - [ ] `splice`  - replace a range of elements (around the cursor) with another list.
 - [ ] `DoubleEndedIterator` for `Cursor`.
-- [ ] `mod sync` - Sync + Send versions of the list and cursor.
-- [ ] `mod pool` - semi-pool allocated list for grouping elements into contiguous memory.
+- [x] `feature(atomic)` - atomic IterList and Cursor.
+- [ ] `feature(pool)` - semi-pool allocated list for grouping elements into contiguous memory.
+- [ ] `feature(no_std)` - no std support.
 
-If ya wanna add any of these, feel free to!  
+Feel free to add any of these if ya wanna!

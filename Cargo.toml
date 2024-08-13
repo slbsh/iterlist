@@ -7,3 +7,6 @@ version = "0.3.5"
 edition = "2021"
 keywords = ["linked-list", "cursor", "data-structures"]
 readme = "README.md"
+
+[features]
+atomic = []
