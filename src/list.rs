@@ -943,11 +943,10 @@ impl<'i, T> Iterator for Cursor<'i, T> {
 }
 
 impl<'t, T> Cursor<'t, T> {
-
     /// Update the cursor to match the current state of the list. `O(1)`.  
     /// Useful if you lose track of the list, or want to use the same cursor on multiple lists.
     #[inline]
-    pub fn reaquire(&mut self, list: &'t IterList<T>) {
+    pub fn reacquire(&mut self, list: &'t IterList<T>) {
         self.current = list.current;
         self.index   = list.index;
     }
