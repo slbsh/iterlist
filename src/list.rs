@@ -31,13 +31,31 @@ impl<T> IterList<T> {
     /// assert_eq!(list.len(), 0);
     /// ```
     #[inline]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { 
             current: ptr::null_mut(),
             len: 0,
             index: 0,
             _boo: PhantomData
         }
+    }
+
+    /// Create a new list with N zeroed elements. `O(n)`.
+    /// *Secret Pro Tip:*  
+    /// This can potentially be a roundabout way to get a sort-of `with_capacity` method.
+    /// Although using it in such a way will rarely improve performance (iterlist never reallocates unlike `Vec`),
+    /// and can actually hurt it in most cases. That should only be done when
+    /// you have some very timing sensitive code, and you cant afford to have to allocate memory.
+    /// ```
+    /// # use iterlist::IterList;
+    /// let list: IterList<u8> = unsafe { IterList::new_zeroed(3) };
+    /// assert_eq!(list.len(), 3);
+    /// assert_eq!(format!("{list:?}"), "[0, 0, 0]");
+    /// ```
+    pub unsafe fn new_zeroed(count: usize) -> Self {
+        (0..count).fold(Self::new(), |mut list, _| {
+            list.insert_next(std::mem::MaybeUninit::zeroed().assume_init()); list
+        })
     }
 
     /// Insert an element after the cursor, retaining current position. `O(1)`.  
@@ -532,7 +550,7 @@ impl<T> IterList<T> {
     /// assert_eq!(list.len(), 3);
     /// ```
     #[inline]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.len
     }
 
@@ -543,8 +561,8 @@ impl<T> IterList<T> {
     /// assert!(list.is_empty());
     /// ```
     #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.current.is_null()
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
     }
 
     /// Get the index of the cursor `O(1)`.
@@ -554,7 +572,7 @@ impl<T> IterList<T> {
     /// assert_eq!(list.index(), 0);
     /// ```
     #[inline]
-    pub fn index(&self) -> usize {
+    pub const fn index(&self) -> usize {
         self.index
     }
 
@@ -571,7 +589,7 @@ impl<T> IterList<T> {
     /// assert_eq!(list.get_cursor(), Some(&1));
     /// ```
     #[inline]
-    pub fn as_cursor(&self) -> Cursor<T> {
+    pub const fn as_cursor(&self) -> Cursor<T> {
         Cursor {
             _list: PhantomData,
             index: self.index,
@@ -974,7 +992,7 @@ impl<'t, T> Cursor<'t, T> {
     /// assert_eq!(cursor.index(), 1);
     /// ```
     #[inline]
-    pub fn index(&self) -> usize {
+    pub const fn index(&self) -> usize {
         self.index
     }
 
