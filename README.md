@@ -6,6 +6,9 @@ It's a doubly linked list with a cursor based api.
 `O(1)` pretty much everything (at and around the cursor).  
 Originally made it for [Shard](https://github.com/shard-org/shard), but thought it could be useful to someone else.  
 
+Sign here to join the linked list uprising against the tyranny of the `Vec`!  
+`- [x]`
+
 **Now Featuring:** the `atomic` module!  
 Are you bored of performant data structures?  
 Do you want to do some lock-free shenanigans?  
@@ -57,7 +60,8 @@ assert_eq!(num, 3);
     (In my tests it was marginally better than `std::collections::VecDeque`)
 - You want to have multiple independent cursors on the same list.
 - You need an iterator that you can move around in and modify.
-- It's also a noticably faster than `std::collections::LinkedList` in most cases!
+- It's also noticably faster than `std::collections::LinkedList` in most cases!
+- You wanna look cool (⌐■-■) ... or not, I'm not your boss. (psst the api is preeetty nice :p)
 
 ## Todos
 - [ ] `append`  - append another list to the end of this one.
