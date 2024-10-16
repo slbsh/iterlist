@@ -6,8 +6,8 @@ It's a doubly linked list with a cursor based api.
 `O(1)` pretty much everything (at and around the cursor).  
 Originally made it for [Shard](https://github.com/shard-org/shard), but thought it could be useful to someone else.  
 
-Sign here to join the linked list uprising against the tyranny of the `Vec`!  
-`- [x]`
+Sign here to join the linked list uprising against the `Vec` tyranny!  
+- [x] 
 
 **Now Featuring:** the `atomic` module!  
 Are you bored of performant data structures?  

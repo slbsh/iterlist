@@ -1000,9 +1000,9 @@ impl<'t, T> Cursor<'t, T> {
         }
     }
 
-    /// Move the cursor to the specified index. `O(n)`.
-    /// If the index is out of bounds the cursor will be moved to the edge, and `false` will be returned.
-    /// Returns `Err(())` if the cursor could not be moved.
+    /// Move the cursor to the specified index. `O(n)`.  
+    /// Returns the number of elements traversed. It is up to the user to check if that number is correct.  
+    /// Returns `Err(n)` if the cursor could not be moved at any point  
     /// ```
     /// # use iterlist::IterList;
     /// let list = IterList::from(vec![1, 2, 3]);
@@ -1012,29 +1012,29 @@ impl<'t, T> Cursor<'t, T> {
     /// assert_eq!(cursor.get_cursor(), Some(&2));
     /// ```
     #[must_use]
-    pub fn move_to(&self, index: usize) -> Result<bool, ()> {
+    pub fn move_to(&self, index: usize) -> Result<usize, usize> {
         match self.index.load(Relaxed).cmp(&index) {
             Ordering::Greater => {
-                for _ in 0..index - self.index.load(Relaxed) {
+                for i in 0..index - self.index.load(Relaxed) {
                     match self.retreat() {
-                        Ok(false) => return Ok(false),
-                        Err(_)    => return Err(()),
+                        Ok(false) => return Ok(i),
+                        Err(_)    => return Err(i),
                         _         => continue,
                     }
                 }
             },
             Ordering::Less    => {
-                for _ in 0..index - self.index.load(Relaxed) {
+                for i in 0..index - self.index.load(Relaxed) {
                     match self.advance() {
-                        Ok(false) => return Ok(false),
-                        Err(_)    => return Err(()),
+                        Ok(false) => return Ok(i),
+                        Err(_)    => return Err(i),
                         _         => continue,
                     }
                 }
             },
             _ => (),
         }
-        Ok(true)
+        Ok(index)
     }
 
 
