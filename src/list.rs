@@ -1,923 +1,849 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::cmp::Ordering;
-use std::mem::{MaybeUninit, self, ManuallyDrop};
-use std::ptr;
+use std::mem;
+use std::ptr::NonNull;
+use std::ops::Not;
 
 /// A doubly linked list. The `IterList` object is a fat pointer of a `Cursor + length`, which owns the underlying data.  
 /// This means the total stack size is 3 words; each element is 2 words + element size.
 pub struct IterList<T> {
-    current: *mut Node<T>,
-    index:   usize,
-    len:     usize,
-    _boo:    PhantomData<T>,
+	current: NonNull<Node<T>>,
+	index:   usize,
+	len:     usize,
+	_boo:    PhantomData<T>,
 }
 
 struct Node<T> {
-    next: *mut Node<T>,
-    prev: *mut Node<T>,
-    elem: T,
+	next: Option<NonNull<Node<T>>>,
+	prev: Option<NonNull<Node<T>>>,
+	elem: T,
+}
+
+impl<T> Node<T> {
+	fn new_nonnull(elem: T) -> NonNull<Self> {
+		unsafe {
+			NonNull::new_unchecked(Box::into_raw(Box::new(Self {
+				next: None,
+				prev: None,
+				elem,
+			})))
+		}
+	}
 }
 
 unsafe impl<T: Send> Send for IterList<T> {}
 unsafe impl<T: Sync> Sync for IterList<T> {}
 
 impl<T> IterList<T> {
-    /// Create a new empty list. `O(1)`.  
-    /// Does not allocate any memory.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list: IterList<u8> = IterList::new();
-    /// assert_eq!(list.len(), 0);
-    /// ```
-    #[inline]
-    pub const fn new() -> Self {
-        Self { 
-            current: ptr::null_mut(),
-            len: 0,
-            index: 0,
-            _boo: PhantomData
-        }
-    }
+	/// Create a new empty list. `O(1)`.  
+	/// Does not allocate any memory.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list: IterList<u8> = IterList::new();
+	/// assert_eq!(list.len(), 0);
+	/// ```
+	#[inline]
+	pub const fn new() -> Self {
+		Self { 
+			current: NonNull::dangling(),
+			len:     0,
+			index:   0,
+			_boo:    PhantomData
+		}
+	}
 
-    /// Create a new list with N zeroed elements. `O(n)`.
-    /// *Secret Pro Tip:*  
-    /// This can potentially be a roundabout way to get a sort-of `with_capacity` method.
-    /// Although using it in such a way will rarely improve performance (iterlist never reallocates unlike `Vec`),
-    /// and can actually hurt it in most cases. That should only be done when
-    /// you have some very timing sensitive code, and you cant afford to have to allocate memory.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list: IterList<u8> = unsafe { IterList::new_zeroed(3) };
-    /// assert_eq!(list.len(), 3);
-    /// assert_eq!(format!("{list:?}"), "[0, 0, 0]");
-    /// ```
-    pub unsafe fn new_zeroed(count: usize) -> Self {
-        (0..count).fold(Self::new(), |mut list, _| {
-            list.insert_next(std::mem::MaybeUninit::zeroed().assume_init()); list
-        })
-    }
+	/// Create a new list with N zeroed elements. `O(n)`.  
+	/// *Secret Pro Tip:*  
+	/// This can potentially be a roundabout way to get a sort-of `with_capacity` method.
+	/// Although using it in such a way will rarely improve performance (iterlist never reallocates unlike `Vec`),
+	/// and can actually hurt it in most cases. That should only be done when
+	/// you have some very timing sensitive code, and you cant afford to have to allocate memory.
+	///
+	/// # Safety
+	/// Type `T` must be safe to initialize as zeroed.
+	///
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list: IterList<u8> = unsafe { IterList::new_zeroed(3) };
+	/// assert_eq!(list.len(), 3);
+	/// assert_eq!(format!("{list:?}"), "[0, 0, 0]");
+	/// ```
+	pub unsafe fn new_zeroed(count: usize) -> Self {
+		(0..count).fold(Self::new(), |mut list, _| {
+			list.insert_next(std::mem::MaybeUninit::zeroed().assume_init()); list
+		})
+	}
 
-    /// Insert an element after the cursor, retaining current position. `O(1)`.  
-    /// If the list is empty it will be inserted at index 0.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::new();
-    /// list.insert_next(1);
-    /// list.insert_next(2);
-    /// list.insert_next(3);
-    /// 
-    /// assert_eq!(list.get_cursor(), Some(&1));
-    /// assert_eq!(&format!("{:?}", list), "[1, 3, 2]");
-    /// ```
-    pub fn insert_next(&mut self, elem: T) {
-        unsafe {
-            let new = Box::into_raw(Box::new(Node {
-                prev: ptr::null_mut(),
-                next: ptr::null_mut(),
-                elem,
-            }));
+	/// Insert an element after the cursor, retaining current position. `O(1)`.  
+	/// If the list is empty it will be inserted at index 0.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::new();
+	/// list.insert_next(1);
+	/// list.insert_next(2);
+	/// list.insert_next(3);
+	/// 
+	/// assert_eq!(list.current(), Some(&1));
+	/// assert_eq!(&format!("{:?}", list), "[1, 3, 2]");
+	/// ```
+	pub fn insert_next(&mut self, elem: T) {
+		let mut new = Node::new_nonnull(elem);
 
-            match self.current.as_ptr() {
-                Some(current) => {
-                    if let Some(next) = (*current).next.as_ptr() {
-                        (*next).prev = new;
-                        (*new).next  = next;
-                    }
+		match self.len {
+			0 => self.current = new,
+			_ => {
+				unsafe {
+					if let Some(mut next) = self.current.as_mut().next {
+						next.as_mut().prev = Some(new);
+						new.as_mut().next  = Some(next);
+					}
 
-                    (*current).next = new;
-                    (*new).prev     = current;
-                },
-                None => self.current = new,
-            }
-            
-            self.len += 1;
-        }
-    }
+					self.current.as_mut().next = Some(new);
+					new.as_mut().prev          = Some(self.current);
+				}
+			},
+		}
 
-    /// Insert an element before the cursor, retaining current position. `O(1)`.  
-    /// If the list is empty it will be inserted at index 0.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::new();
-    /// list.insert_prev(1);
-    /// list.insert_prev(2);
-    /// list.insert_prev(3);
-    ///
-    /// assert_eq!(list.get_cursor(), Some(&1));
-    /// assert_eq!(&format!("{:?}", list), "[2, 3, 1]");
-    /// ```
-    pub fn insert_prev(&mut self, elem: T) {
-        unsafe {
-            let new = Box::into_raw(Box::new(Node {
-                prev: ptr::null_mut(),
-                next: ptr::null_mut(),
-                elem,
-            }));
+		self.len += 1;
+	}
 
-            match self.current.as_ptr() {
-                Some(current) => {
-                    if let Some(prev) = (*current).prev.as_ptr() {
-                        (*prev).next = new;
-                        (*new).prev  = prev;
-                    }
+	/// Insert an element before the cursor, retaining current position. `O(1)`.  
+	/// If the list is empty it will be inserted at index 0.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::new();
+	/// list.insert_prev(1);
+	/// list.insert_prev(2);
+	/// list.insert_prev(3);
+	///
+	/// assert_eq!(list.current(), Some(&1));
+	/// assert_eq!(&format!("{:?}", list), "[2, 3, 1]");
+	/// ```
+	pub fn insert_prev(&mut self, elem: T) {
+		let mut new = Node::new_nonnull(elem);
 
-                    (*current).prev = new;
-                    (*new).next     = current;
-                    self.index += 1;
-                },
-                None => self.current = new,
-            }
+		match self.len {
+			0 => self.current = new,
+			_ => {
+				unsafe {
+					if let Some(mut prev) = self.current.as_mut().prev {
+						prev.as_mut().next = Some(new);
+						new.as_mut().prev  = Some(prev);
+					}
 
-            self.len += 1;
-        }
-    }
+					self.current.as_mut().prev = Some(new);
+					new.as_mut().next          = Some(self.current);
+				}
 
-    /// Push an element after the cursor, moving the cursor to it. `O(1)`.  
-    /// If the list is empty it will be inserted at index 0.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::new();
-    /// list.push_next(1);
-    /// list.push_next(2);
-    /// list.push_next(3);
-    ///
-    /// assert_eq!(format!("{:?}", list), "[1, 2, 3]");
-    ///
-    /// assert_eq!(list.get_cursor(), Some(&3));
-    /// assert_eq!(&format!("{:?}", list), "[1, 2, 3]");
-    /// ```
-    pub fn push_next(&mut self, elem: T) {
-        if self.current.is_null() {
-            self.insert_next(elem);
-            return;
-        }
+				self.index += 1;
+			},
+		}
 
-        self.insert_next(elem);
-        self.advance();
+		self.len += 1;
+	}
 
-    }
+	/// Push an element after the cursor, moving the cursor to it. `O(1)`.  
+	/// If the list is empty it will be inserted at index 0.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::new();
+	/// list.push_next(1);
+	/// list.push_next(2);
+	/// list.push_next(3);
+	///
+	/// assert_eq!(format!("{:?}", list), "[1, 2, 3]");
+	///
+	/// assert_eq!(list.current(), Some(&3));
+	/// assert_eq!(&format!("{:?}", list), "[1, 2, 3]");
+	/// ```
+	pub fn push_next(&mut self, elem: T) {
+		if self.len == 0 {
+			self.insert_next(elem);
+			return;
+		}
 
-    /// Push an element before the cursor, moving the cursor to it. `O(1)`.  
-    /// If the list is empty it will be inserted at index 0.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::new();
-    /// list.push_prev(1);
-    /// list.push_prev(2);
-    /// list.push_prev(3);
-    ///
-    /// assert_eq!(list.get_cursor(), Some(&3));
-    /// assert_eq!(&format!("{:?}", list), "[3, 2, 1]");
-    /// ```
-    pub fn push_prev(&mut self, elem: T) {
-        if self.current.is_null() {
-            self.insert_prev(elem);
-            return;
-        }
+		self.insert_next(elem);
+		let _ = self.advance();
+	}
 
-        self.insert_prev(elem);
-        self.retreat();
-    }
+	/// Push an element before the cursor, moving the cursor to it. `O(1)`.  
+	/// If the list is empty it will be inserted at index 0.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::new();
+	/// list.push_prev(1);
+	/// list.push_prev(2);
+	/// list.push_prev(3);
+	///
+	/// assert_eq!(list.current(), Some(&3));
+	/// assert_eq!(&format!("{:?}", list), "[3, 2, 1]");
+	/// ```
+	pub fn push_prev(&mut self, elem: T) {
+		if self.len == 0 {
+			self.insert_prev(elem);
+			return;
+		}
 
-    /// Move the cursor to the front of the list. `O(n)`.  
-    /// Returns the number of elements traversed.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::new();
-    /// list.push_next(1);
-    /// list.push_next(2);
-    /// list.push_next(3);
-    ///
-    /// assert_eq!(list.get_cursor(), Some(&3));
-    ///
-    /// let offset = list.move_to_front();
-    /// assert_eq!(offset, 2);
-    /// assert_eq!(list.get_cursor(), Some(&1));
-    /// ```
-    pub fn move_to_front(&mut self) -> usize {
-        unsafe {
-            self.index = 0;
-            
-            let mut offset = 0;
-            while let Some(prev) = self.current.as_ref().map(|c| c.prev).filter(|p| !p.is_null()) {
-                self.current = prev;
-                offset += 1;
-            }
-            offset
-        }
-    }
+		self.insert_prev(elem);
+		let _ = self.retreat();
+	}
 
-    /// Move the cursor to the back of the list. `O(n)`.  
-    /// Returns the number of elements traversed.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::from(vec![1, 2, 3]);
-    ///
-    /// let offset = list.move_to_back();
-    /// assert_eq!(offset, 2);
-    /// assert_eq!(list.get_cursor(), Some(&3));
-    /// ```
-    pub fn move_to_back(&mut self) -> usize {
-        unsafe {
-            self.index = self.len - 1;
+	/// Move the cursor to the front of the list. `O(n)`.  
+	/// Returns the number of elements traversed.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::new();
+	/// list.push_next(1);
+	/// list.push_next(2);
+	/// list.push_next(3);
+	///
+	/// assert_eq!(list.current(), Some(&3));
+	///
+	/// let offset = list.move_to_front();
+	/// assert_eq!(offset, 2);
+	/// assert_eq!(list.current(), Some(&1));
+	/// ```
+	pub fn move_to_front(&mut self) -> usize {
+		if self.len == 0 { return 0; }
 
-            let mut offset = 0;
-            while let Some(next) = self.current.as_ref().map(|c| c.next).filter(|p| !p.is_null()) {
-                self.current = next;
-                offset += 1;
-            }
-            offset
-        }
-    }
+		self.index = 0;
 
-    /// Move the cursor to the specified index. `O(n)`.
-    /// If the index is out of bounds the cursor will be moved to the edge, 
-    /// and `false` will be returned.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::from(vec![1, 2, 3]);
-    /// list.move_to(1);
-    /// assert_eq!(list.get_cursor(), Some(&2));
-    /// ```
-    #[inline]
-    pub fn move_to(&mut self, index: usize) -> bool {
-        match self.index.cmp(&index) {
-            Ordering::Greater => (0..self.index - index).fold(true, |_, _| self.retreat()),
-            Ordering::Less    => (0..index - self.index).fold(true, |_, _| self.advance()),
-            Ordering::Equal   => true,
-        }
-    }
+		for i in 0_usize.. {
+			match unsafe { self.current.as_ref().prev } {
+				Some(prev) => self.current = prev,
+				None => return i,
+			}
+		}
+		unsafe { std::hint::unreachable_unchecked() }
+	}
 
-    /// Move the cursor one step forward. `O(1)`.  
-    /// Returns `false` if the cursor could not be moved.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::from(vec![1, 2, 3]);
-    /// assert_eq!(list.get_cursor(), Some(&1));
-    ///
-    /// list.advance();
-    /// assert_eq!(list.get_cursor(), Some(&2));
-    /// ```
-    #[inline]
-    pub fn advance(&mut self) -> bool {
-        unsafe {
-            self.current.as_ref().and_then(|c| c.next.as_ptr()).map(|c| {
-                self.current = c;
-                self.index += 1;
-            }).is_some()
-        }
-    }
+	/// Move the cursor to the back of the list. `O(n)`.  
+	/// Returns the number of elements traversed.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::from(vec![1, 2, 3]);
+	///
+	/// let offset = list.move_to_back();
+	/// assert_eq!(offset, 2);
+	/// assert_eq!(list.current(), Some(&3));
+	/// ```
+	pub fn move_to_back(&mut self) -> usize {
+		if self.len == 0 { return 0; }
 
-    /// Move the cursor one step backward. `O(1)`.  
-    /// Returns `false` if the cursor could not be moved.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::from(vec![1, 2, 3]);
-    ///
-    /// list.move_to_back();
-    /// assert_eq!(list.get_cursor(), Some(&3));
-    ///
-    /// list.retreat();
-    /// assert_eq!(list.get_cursor(), Some(&2));
-    /// ```
-    #[inline]
-    pub fn retreat(&mut self) -> bool {
-        unsafe {
-            self.current.as_ref().and_then(|c| c.prev.as_ptr()).map(|prev| {
-                self.current = prev;
-                self.index -= 1;
-            }).is_some()
-        }
-    }
+		self.index = self.len - 1;
 
-    /// Move the cursor by a given offset. `O(n)`.  
-    /// If the offset is out of bounds the cursor will be moved to the edge, 
-    /// and `false` will be returned.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::from(vec![1, 2, 3]);
-    ///
-    /// list.move_to_back();
-    /// assert_eq!(list.index(), 2);
-    ///
-    /// list.move_by(-2);
-    /// assert_eq!(list.index(), 0);
-    /// assert_eq!(list.get_cursor(), Some(&1));
-    ///
-    /// assert!(!list.move_by(10));
-    /// assert_eq!(list.index(), 2);
-    /// ```
-    #[inline]
-    pub fn move_by(&mut self, offset: isize) -> bool {
-        match offset.cmp(&0) {
-            Ordering::Greater => (0..offset ).fold(true, |_, _| self.advance()),
-            Ordering::Less    => (0..-offset).fold(true, |_, _| self.retreat()),
-            Ordering::Equal   => true,
-        }
-    }
+		for i in 0_usize.. {
+			match unsafe { self.current.as_ref().next } {
+				Some(next) => self.current = next,
+				None => return i,
+			}
+		}
+		unsafe { std::hint::unreachable_unchecked() }
+	}
 
-    /// Get a ref to an element at the given offset. `O(n)`.
-    /// Returns `None` if the offset is out of bounds.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = IterList::from(vec![1, 2, 3]);
-    /// assert_eq!(list.get_cursor(), Some(&1));
-    /// assert_eq!(list.get(1), Some(&2));
-    /// assert_eq!(list.get(-1), None);
-    /// ```
-    pub fn get(&self, offset: isize) -> Option<&T> {
-        offset.checked_abs()
-            .and_then(|s| (s > self.index as isize).into())
-            .and_then(|_| (self.index as isize + offset > self.len as isize).into())?;
+	/// Move the cursor to the specified index. `O(n)`.
+	/// If the index is out of bounds the cursor will be moved to the edge, 
+	/// and `false` will be returned.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::from(vec![1, 2, 3]);
+	/// list.move_to(1);
+	/// assert_eq!(list.current(), Some(&2));
+	/// ```
+	#[inline]
+	#[must_use]
+	pub fn move_to(&mut self, index: usize) -> bool {
+		match self.index.cmp(&index) {
+			Ordering::Greater => !(0..self.index - index).any(|_| !self.retreat()),
+			Ordering::Less    => !(0..index - self.index).any(|_| !self.advance()),
+			Ordering::Equal   => true,
+		}
+	}
 
-        let mut ptr = self.current.as_ptr()?;
+	/// Move the cursor one step forward. `O(1)`.  
+	/// Returns `false` if the cursor could not be moved.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::from(vec![1, 2, 3]);
+	/// assert_eq!(list.current(), Some(&1));
+	///
+	/// list.advance();
+	/// assert_eq!(list.current(), Some(&2));
+	/// ```
+	#[inline]
+	#[must_use]
+	pub fn advance(&mut self) -> bool {
+		if self.len == 0 { return false; }
 
-        unsafe {
-            match offset.cmp(&0) {
-                Ordering::Greater => (0..offset).for_each(|_| {ptr.as_ref().map(|c| ptr = c.next); }),
-                Ordering::Less    => (0..-offset).for_each(|_| {ptr.as_ref().map(|c| ptr =  c.prev); }),
-                Ordering::Equal   => return self.get_cursor(),
-            }
+		unsafe { self.current.as_ref() }.next.map(|next| {
+				self.current = next;
+				self.index += 1; })
+			.is_some()
+	}
 
-            ptr.as_ref().map(|c| &c.elem )
-        }
-    }
+	/// Move the cursor one step forward. `O(1)`.  
+	///
+	/// # Safety
+	/// This function assumes that the cursor is not at the end of the list,
+	/// it is up to the caller to ensure this.
+	#[inline]
+	pub unsafe fn advance_unchecked(&mut self) {
+		self.current = self.current.as_ref().next.unwrap_unchecked();
+		self.index += 1;
+	}
 
-    /// Get a mut ref to an element at the given offset. `O(n)`.
-    /// Returns `None` if the offset is out of bounds.  
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::from(vec![1, 2, 3]);
-    ///
-    /// *list.get_mut(1).unwrap() = 4;
-    /// assert_eq!(format!("{:?}", list), "[1, 4, 3]");
-    /// ```
-    pub fn get_mut(&mut self, offset: isize) -> Option<&mut T> {
-        offset.checked_abs()
-            .and_then(|s| (s > self.index as isize).into())
-            .and_then(|_| (self.index as isize + offset > self.len as isize).into())?;
+	/// Move the cursor one step backward. `O(1)`.  
+	/// Returns `false` if the cursor could not be moved.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::from(vec![1, 2, 3]);
+	///
+	/// list.move_to_back();
+	/// assert_eq!(list.current(), Some(&3));
+	///
+	/// list.retreat();
+	/// assert_eq!(list.current(), Some(&2));
+	/// ```
+	#[inline]
+	#[must_use]
+	pub fn retreat(&mut self) -> bool {
+		if self.len == 0 { return false; }
 
-        let mut current = self.current.as_ptr()?;
+		unsafe { self.current.as_ref() }.prev.map(|prev| {
+				self.current = prev;
+				self.index -= 1; })
+			.is_some()
+	}
 
-        unsafe {
-            match offset.cmp(&0) {
-                Ordering::Greater => (0..offset).for_each(|_| {current.as_ref().map(|c| current = c.next); }),
-                Ordering::Less    => (0..-offset).for_each(|_| {current.as_ref().map(|c| current=  c.prev); }),
-                Ordering::Equal   => return self.get_cursor_mut(),
-            }
+	/// Move the cursor one step backward. `O(1)`.  
+	///
+	/// # Safety
+	/// This function assumes that the cursor is not at the end of the list,
+	/// it is up to the caller to ensure this.
+	#[inline]
+	pub unsafe fn retreat_unchecked(&mut self) {
+		self.current = self.current.as_ref().prev.unwrap_unchecked();
+		self.index -= 1;
+	}
 
-            current.as_mut().map(|c| &mut c.elem )
-        }
-    }
+	/// Move the cursor by a given offset. `O(n)`.  
+	/// If the offset is out of bounds the cursor will be moved to the edge, 
+	/// and `false` will be returned.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::from(vec![1, 2, 3]);
+	///
+	/// list.move_to_back();
+	/// assert_eq!(list.index(), 2);
+	///
+	/// list.move_by(-2);
+	/// assert_eq!(list.index(), 0);
+	/// assert_eq!(list.current(), Some(&1));
+	///
+	/// assert!(!list.move_by(10));
+	/// assert_eq!(list.index(), 2);
+	/// ```
+	#[inline]
+	#[must_use]
+	pub fn move_by(&mut self, offset: isize) -> bool {
+		match offset.cmp(&0) {
+			Ordering::Greater => (0..offset ).fold(true, |_, _| self.advance()),
+			Ordering::Less    => (0..-offset).fold(true, |_, _| self.retreat()),
+			Ordering::Equal   => true,
+		}
+	}
 
-    /// Remove the current element and return it. `O(1)`.  
-    /// The cursor will then point to the next element.  
-    /// If the removed element was at the end of the list, the cursor will point to the previous
-    /// element and `false` will be returned.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::from(vec![1, 2, 3]);
-    /// assert_eq!(list.consume_forward(), Some((1, true)));
-    /// assert_eq!(&format!("{:?}", list), "[2, 3]");
-    /// assert_eq!(list.get_cursor(), Some(&2));
-    /// ```
-    pub fn consume_forward(&mut self) -> Option<(T, bool)> {
-        self.current.as_ptr().map(|node| unsafe {
-            let node = Box::from_raw(node);
-            self.len -= 1;
+	fn get_raw(&self, offset: isize) -> Option<NonNull<Node<T>>> {
+		if self.index as isize + offset < 0 || self.index as isize + offset >= self.len as isize {
+			return None;
+		}
 
-            node.prev.as_mut().map(|prev| prev.next = node.next);
+		match offset.cmp(&0) {
+			Ordering::Greater => (0.. offset).try_fold(self.current, |mut ptr, _| unsafe { ptr.as_ref() }.next.map(|c| { ptr = c; ptr })),
+			Ordering::Less    => (0..-offset).try_fold(self.current, |mut ptr, _| unsafe { ptr.as_ref() }.prev.map(|c| { ptr = c; ptr })),
+			Ordering::Equal   => Some(self.current)
+		}
+	}
 
-            match node.next.as_mut() {
-                Some(next) => {
-                    next.prev = node.prev;
-                    self.current = node.next;
-                    (node.elem, true)
-                },
-                None => {
-                    self.current = node.prev;
-                    // self.index -= 1;
-                    (node.elem, false)
-                }
-            }
-        })
-    }
+	/// Get a ref to an element at the given offset from the cursor. `O(n)`.
+	/// Returns `None` if the offset is out of bounds.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list = IterList::from(vec![1, 2, 3]);
+	/// assert_eq!(list.current(), Some(&1));
+	/// assert_eq!(list.get(1), Some(&2));
+	/// assert_eq!(list.get(-1), None);
+	/// ```
+	#[inline]
+	pub fn get(&self, offset: isize) -> Option<&T> {
+		self.get_raw(offset).map(|ptr| unsafe { &ptr.as_ref().elem })
+	}
 
-    /// Remove the current element and return it. `O(1)`.  
-    /// The cursor will then point to the previous element.  
-    /// If the removed element was at the end of the list, the cursor will point to the previous
-    /// element and `false` will be returned.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::from(vec![1, 2, 3]);
-    /// list.move_by(1);
-    /// assert_eq!(list.consume_backward(), Some((2, true)));
-    /// assert_eq!(&format!("{:?}", list), "[1, 3]");
-    /// assert_eq!(list.get_cursor(), Some(&1));
-    /// ```
-    pub fn consume_backward(&mut self) -> Option<(T, bool)> {
-        self.current.as_ptr().map(|node| unsafe {
-            let node = Box::from_raw(node);
-            self.len -= 1;
-            self.index -= 1;
+	/// Get a mut ref to an element at the given offset. `O(n)`.
+	/// Returns `None` if the offset is out of bounds.  
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::from(vec![1, 2, 3]);
+	///
+	/// *list.get_mut(1).unwrap() = 4;
+	/// assert_eq!(format!("{:?}", list), "[1, 4, 3]");
+	/// ```
+	#[inline]
+	pub fn get_mut(&mut self, offset: isize) -> Option<&mut T> {
+		self.get_raw(offset).map(|mut ptr| unsafe { &mut ptr.as_mut().elem })
+	}
 
-            node.next.as_mut().map(|next| next.prev = node.prev);
+	/// Remove the current element and return it. `O(1)`.  
+	/// The cursor will then point to the next element.  
+	/// If the removed element was at the end of the list, the cursor will point to the previous
+	/// element and `false` will be returned.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::from(vec![1, 2, 3]);
+	/// assert_eq!(list.consume_forward(), Some((1, true)));
+	/// assert_eq!(&format!("{:?}", list), "[2, 3]");
+	/// assert_eq!(list.current(), Some(&2));
+	/// ```
+	pub fn consume_forward(&mut self) -> Option<(T, bool)> {
+		if self.len == 0 { return None; }
 
-            match node.prev.as_mut() {
-                Some(prev) => {
-                    prev.next = node.next;
-                    self.current = node.prev;
-                    (node.elem, true)
-                },
-                None => {
-                    self.current = node.next;
-                    (node.elem, false)
-                }
-            }
-        })
-    }
+		let node = unsafe { Box::from_raw(self.current.as_ptr()) };
 
-    /// Replace the current element with a new one. `O(1)`.  
-    /// Returns the old element.  
-    /// If the list is empty, the new element will be inserted, and `None` returned.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::from(vec![1, 2, 3]);
-    /// assert_eq!(list.replace_cursor(4), Some(1));
-    /// assert_eq!(format!("{:?}", list), "[4, 2, 3]");
-    /// ```
-    #[inline]
-    pub fn replace_cursor(&mut self, elem: T) -> Option<T> {
-        unsafe {
-            match self.current.as_mut() {
-                None => { self.push_next(elem); None }, 
-                Some(node) => Some(std::mem::replace(&mut node.elem, elem)),
-            }
-        }
-    }
+		self.len -= 1;
+		node.prev.map(|mut prev| unsafe { prev.as_mut().next = node.next });
 
-    /// Split the list after the cursor. `O(1)`.  
-    /// If the list is empty, or the cursor is at the end, `None` will be returned.  
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::from(vec![1, 2, 3]);
-    /// list.advance();
-    /// let new_list = list.split_after().unwrap();
-    ///
-    /// assert_eq!(format!("{:?}", list), "[1, 2]");
-    /// assert_eq!(format!("{:?}", new_list), "[3]");
-    /// assert_eq!(new_list.index(), 0);
-    /// ```
-    pub fn split_after(&mut self) -> Option<Self> {
-        unsafe {
-            self.current.as_ref().and_then(|c| c.next.as_ptr()).map(|next| {
-                let mut new = Self::new();
+		match node.next {
+			Some(mut next) => {
+				unsafe { next.as_mut().prev = node.prev; }
+				self.current = next;
+				Some((node.elem, true))
+			},
+			None => {
+				self.current = node.prev.unwrap_or(NonNull::dangling()); // FIXME: idkk if this works
+				Some((node.elem, false))
+			}
+		}
+	}
 
-                new.current = next;
-                new.len = self.len - self.index - 1;
-                self.len -= new.len;
+	/// Remove the current element and return it. `O(1)`.  
+	/// The cursor will then point to the previous element.  
+	/// If the removed element was at the end of the list, the cursor will point to the previous
+	/// element and `false` will be returned.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::from(vec![1, 2, 3]);
+	/// list.move_by(1);
+	/// assert_eq!(list.consume_backward(), Some((2, true)));
+	/// assert_eq!(&format!("{:?}", list), "[1, 3]");
+	/// assert_eq!(list.current(), Some(&1));
+	/// ```
+	pub fn consume_backward(&mut self) -> Option<(T, bool)> {
+		if self.len == 0 { return None; }
 
-                (*self.current).next = ptr::null_mut();
-                (*new.current).prev = ptr::null_mut();
+		let node = unsafe { Box::from_raw(self.current.as_ptr()) };
 
-                new
-            })
-        }
-    }
+		self.len -= 1;
+		self.index -= 1;
+		node.next.map(|mut next| unsafe { next.as_mut().prev = node.prev });
 
-    /// Split the list before the cursor. `O(1)`.
-    /// If the list is empty, or the cursor is at the front, `None` will be returned.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::from(vec![1, 2, 3, 4]);
-    /// list.move_by(2);
-    /// let new_list = list.split_before().unwrap();
-    ///
-    /// assert_eq!(format!("{:?}", list), "[3, 4]");
-    /// assert_eq!(format!("{:?}", new_list), "[1, 2]");
-    /// assert_eq!(new_list.index(), 1);
-    /// assert_eq!(list.index(), 0);
-    /// ```
-    pub fn split_before(&mut self) -> Option<Self> {
-        unsafe {
-            self.current.as_ref().and_then(|c| c.prev.as_ptr()).map(|prev| {
-                let mut new = Self::new();
+		match node.prev {
+			Some(mut prev) => {
+				unsafe { prev.as_mut().next = node.next; }
+				self.current = prev;
+				Some((node.elem, true))
+			},
+			None => {
+				self.current = node.next.unwrap_or(NonNull::dangling());
+				Some((node.elem, false))
+			}
+		}
+	}
 
-                new.current = prev;
-                new.len = self.index;
-                self.len -= new.len;
-                self.index = 0;
-                new.index = new.len - 1;
+	/// Replace the current element with a new one. `O(1)`.  
+	/// Returns the old element.  
+	/// If the list is empty, the new element will be inserted, and `None` returned.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::from(vec![1, 2, 3]);
+	/// assert_eq!(list.replace_cursor(4), Some(1));
+	/// assert_eq!(format!("{:?}", list), "[4, 2, 3]");
+	/// ```
+	#[inline]
+	pub fn replace_cursor(&mut self, elem: T) -> Option<T> {
+		match self.len {
+			0 => { self.push_next(elem); None },
+			_ => Some(std::mem::replace(unsafe { &mut self.current.as_mut().elem }, elem)),
+		}
+	}
 
-                (*self.current).prev = ptr::null_mut();
-                (*new.current).next = ptr::null_mut();
+	/// Apply the current state of a cursor to the list. `O(n)`.
+	///
+	/// # Safety
+	/// The cursor must be valid and point to a `Node` in the same list.
+	#[inline]
+	pub unsafe fn apply_cursor_unchecked(&mut self, cursor: &Cursor<T>) {
+		self.current = cursor.current.unwrap_unchecked();
+		self.index   = cursor.index;
+	}
 
-                new
-            })
-        }
-    }
+	#[inline]
+	pub fn apply_cursor(&mut self, cursor: &Cursor<T>) -> bool {
+		if self.index + cursor.index >= self.len { return false; }
 
-    /// Get a ref to the current element. `O(1)`.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::from(vec![1, 2, 3]);
-    ///
-    /// assert_eq!(list.get_cursor(), Some(&1));
-    /// ```
-    #[inline]
-    pub fn get_cursor(&self) -> Option<&T> {
-        unsafe { self.current.as_ref().map(|c| &c.elem ) }
-    }
+		match self.index.cmp(&cursor.index) {
+			Ordering::Greater => (0..self.index - cursor.index)
+				.try_fold(self.current, |ptr, _| unsafe { ptr.as_ref() }.prev.map(|c| { self.current = c; ptr }))
+				.map(|p| { self.current = p; self.index = cursor.index }).is_some(),
+			Ordering::Less    => (0..cursor.index - self.index)
+				.try_fold(self.current, |ptr, _| unsafe { ptr.as_ref() }.next.map(|c| { self.current = c; ptr }))
+				.map(|p| { self.current = p; self.index = cursor.index }).is_some(),
+			Ordering::Equal   => true,
+		}
+	}
 
-    /// Get a mut ref to the current element. `O(1)`.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::from(vec![1, 2, 3]);
-    ///
-    /// *list.get_cursor_mut().unwrap() = 4;
-    /// assert_eq!(format!("{:?}", list), "[4, 2, 3]");
-    /// ```
-    #[inline]
-    pub fn get_cursor_mut(&mut self) -> Option<&mut T> {
-        unsafe { self.current.as_mut().map(|c| &mut c.elem ) }
-    }
+	/// Split the list after the cursor. `O(1)`.  
+	/// If the list is empty, or the cursor is at the end, `None` will be returned.  
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::from(vec![1, 2, 3]);
+	/// list.advance();
+	/// let new_list = list.split_after().unwrap();
+	///
+	/// assert_eq!(format!("{:?}", list), "[1, 2]");
+	/// assert_eq!(format!("{:?}", new_list), "[3]");
+	/// assert_eq!(new_list.index(), 0);
+	/// ```
+	pub fn split_after(&mut self) -> Option<Self> {
+		if self.len == 0 { return None; }
 
-    /// Get the number of elements in the list. `O(1)`.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = IterList::from(vec![1, 2, 3]);
-    /// assert_eq!(list.len(), 3);
-    /// ```
-    #[inline]
-    pub const fn len(&self) -> usize {
-        self.len
-    }
+		unsafe { self.current.as_ref() }.next.map(|next| {
+			let mut new = Self::new();
+			new.current = next;
 
-    /// Check if the list is empty. `O(1)`.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list: IterList<u8> = IterList::new();
-    /// assert!(list.is_empty());
-    /// ```
-    #[inline]
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
-    }
+			new.len = self.len - self.index - 1;
+			self.len -= new.len;
 
-    /// Get the index of the cursor `O(1)`.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = IterList::from(vec![1, 2, 3]);
-    /// assert_eq!(list.index(), 0);
-    /// ```
-    #[inline]
-    pub const fn index(&self) -> usize {
-        self.index
-    }
+			unsafe { self.current.as_mut().next = None; }
+			unsafe { new .current.as_mut().prev = None; }
 
-    /// Provides a copy of the current cursor. `O(1)`.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = IterList::from(vec![1, 2, 3]);
-    /// let mut slice = list.as_cursor();
-    ///
-    /// assert_eq!(slice.next(),      Some(&1));
-    /// assert_eq!(slice.next(),      Some(&2));
-    /// assert_eq!(slice.next(),      Some(&3));
-    ///
-    /// assert_eq!(list.get_cursor(), Some(&1));
-    /// ```
-    #[inline]
-    pub const fn as_cursor(&self) -> Cursor<T> {
-        Cursor {
-            _list: PhantomData,
-            index: self.index,
-            current: self.current,
-        }
-    }
+			new
+		})
+	}
 
-    /// Make the list continous in memory. `O(n)`.  
-    /// This allows you to take a high upfront cost to potentially make future reads faster.
-    ///
-    /// The returned list will not be able to have elements added or removed, as doing so could cause a use after free or memory leak.  
-    /// (the memory has to be deallocated all at once)  
-    /// 
-    /// In the future this will be moved and expanded into a `pool` module.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = IterList::from(vec![1, 2, 3]);
-    /// let mut contigous = list.into_continous();
-    ///
-    /// assert_eq!(format!("{:?}", contigous), "[1, 2, 3]");
-    /// assert_eq!(contigous.get_mut(1), Some(&mut 2));
-    ///
-    /// let num = contigous.as_cursor().fold(0, |acc, elem| acc + elem);
-    /// assert_eq!(num, 6);
-    /// ```
-    pub fn into_continous(mut self) -> ContinousIterList<T> {
-        unsafe {
-            let mut vec = Vec::<Node<T>>::with_capacity(self.len);
-            let vec_ptr = vec.as_mut_ptr();
+	/// Split the list before the cursor. `O(1)`.
+	/// If the list is empty, or the cursor is at the front, `None` will be returned.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::from(vec![1, 2, 3, 4]);
+	/// list.move_by(2);
+	/// let new_list = list.split_before().unwrap();
+	///
+	/// assert_eq!(format!("{:?}", list), "[3, 4]");
+	/// assert_eq!(format!("{:?}", new_list), "[1, 2]");
+	/// assert_eq!(new_list.index(), 1);
+	/// assert_eq!(list.index(), 0);
+	/// ```
+	pub fn split_before(&mut self) -> Option<Self> {
+		if self.len == 0 { return None; }
 
-            let (len, index) = (self.len, self.index);
+		unsafe { self.current.as_ref() }.prev.map(|prev| {
+			let mut new = Self::new();
 
-            self.move_to_front();
+			new.current = prev;
+			new.len = self.index;
+			self.len -= new.len;
+			self.index = 0;
+			new.index = new.len - 1;
 
-            let mut prev = ptr::null_mut();
-            let mut i = 0;
+			unsafe { self.current.as_mut().prev = None; }
+			unsafe { new .current.as_mut().next = None; }
 
-            while let Some((elem, _)) = self.consume_forward() {
-                vec.push(Node { next: ptr::null_mut(), prev, elem, });
+			new
+		})
+	}
 
-                prev.as_ptr().map(|p| (*p).next = vec_ptr.add(i));
-                prev = vec_ptr.add(i);
+	/// Get a ref to the current element. `O(1)`.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::from(vec![1, 2, 3]);
+	///
+	/// assert_eq!(list.current(), Some(&1));
+	/// ```
+	#[inline]
+	pub fn current(&self) -> Option<&T> {
+		self.is_empty().not().then_some(unsafe { &self.current.as_ref().elem })
+	}
 
-                i += 1;
-            }
+	/// Get a mut ref to the current element. `O(1)`.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::from(vec![1, 2, 3]);
+	///
+	/// *list.get_current_mut().unwrap() = 4;
+	/// assert_eq!(format!("{:?}", list), "[4, 2, 3]");
+	/// ```
+	#[inline]
+	pub fn get_current_mut(&mut self) -> Option<&mut T> {
+		self.is_empty().not().then_some(unsafe { &mut self.current.as_mut().elem })
+	}
 
-            mem::forget(vec);
+	/// Get the number of elements in the list. `O(1)`.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list = IterList::from(vec![1, 2, 3]);
+	/// assert_eq!(list.len(), 3);
+	/// ```
+	#[inline]
+	pub const fn len(&self) -> usize {
+		self.len
+	}
 
-            ContinousIterList(ManuallyDrop::new(IterList {
-                current: vec_ptr.add(index),
-                len, index,
-                _boo: PhantomData,
-            }))
-        }
-    }
+	/// Check if the list is empty. `O(1)`.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list: IterList<u8> = IterList::new();
+	/// assert!(list.is_empty());
+	/// ```
+	#[inline]
+	pub const fn is_empty(&self) -> bool {
+		self.len == 0
+	}
+
+	/// Get the index of the cursor `O(1)`.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list = IterList::from(vec![1, 2, 3]);
+	/// assert_eq!(list.index(), 0);
+	/// ```
+	#[inline]
+	pub const fn index(&self) -> usize {
+		self.index
+	}
+
+	/// Provides a copy of the current cursor. `O(1)`.  
+	/// **Important**: Creating a cursor of an empty list does not work as expected,
+	/// The cursor will be invalid until `Cursor::reaquire` is called on a non-empty list.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list = IterList::from(vec![1, 2, 3]);
+	/// let mut slice = list.as_cursor();
+	///
+	/// assert_eq!(slice.next(),      Some(&1));
+	/// assert_eq!(slice.next(),      Some(&2));
+	/// assert_eq!(slice.next(),      Some(&3));
+	///
+	/// assert_eq!(list.current(), Some(&1));
+	/// ```
+	#[inline]
+	pub fn as_cursor(&self) -> Cursor<T> {
+		Cursor {
+			_list:   PhantomData,
+			index:   self.index,
+			current: self.is_empty().not().then_some(self.current),
+		}
+	}
 }
-
-/// An `IterList` packed into continous memory.  
-/// Cannot have elements added or removed.  
-pub struct ContinousIterList<T>(ManuallyDrop<IterList<T>>);
-
-impl<T> std::ops::Deref for ContinousIterList<T> {
-    type Target = IterList<T>;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T> Drop for ContinousIterList<T> {
-    #[inline]
-    fn drop(&mut self) {
-        unsafe {
-            std::alloc::dealloc(self.0.current as *mut u8, std::alloc::Layout::array::<Node<T>>(self.0.len).unwrap());
-        }
-    }
-}
-
-impl<T> ContinousIterList<T> {
-    #[inline]
-    pub fn get_mut(&mut self, offset: isize) -> Option<&mut T> {
-        self.0.get_mut(offset)
-    }
-
-    #[inline]
-    pub fn cursor_mut(&mut self) -> Option<&mut T> {
-        self.0.get_cursor_mut()
-    }
-
-    /// Convert a `ContinousIterList` back into an `IterList`. `O(n)`.
-    pub fn into_iterlist(self) -> IterList<T> {
-        let mut new = IterList::new();
-
-        if self.0.len() == 0 {
-            return new;
-        }
-
-        unsafe {
-            let mut current = self.0.current;
-            while let Some(node) = current.as_ptr() {
-                let replace: T = MaybeUninit::uninit().assume_init();
-                new.push_next(mem::replace(&mut (*node).elem, replace));
-                current = (*node).next;
-            }
-        }
-
-        new.move_to(self.0.index);
-
-        new
-    }
-}
-
-impl<T: Debug> Debug for ContinousIterList<T> {
-    #[inline]
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:?}", &*self.0)
-    }
-}
-
-
 
 
 
 
 impl<T> std::ops::Index<isize> for IterList<T> {
-    type Output = T;
+	type Output = T;
 
-    /// Essentially equivalent to `get`. `O(n)`.  
-    /// # Panics
-    /// Panics if the index is out of bounds.
-    #[inline]
-    fn index(&self, index: isize) -> &Self::Output {
-        self.get(index).unwrap_or_else(|| panic!("Index out of bounds"))
-    }
+	/// Essentially equivalent to `get`. `O(n)`.  
+	/// # Panics
+	/// Panics if the index is out of bounds.
+	#[inline]
+	fn index(&self, index: isize) -> &Self::Output {
+		self.get(index).expect("Index out of bounds")
+	}
 }
 
 impl<T> Default for IterList<T> {
-    #[inline]
-    fn default() -> Self {
-        Self::new()
-    }
+	#[inline]
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 impl<T> std::ops::IndexMut<isize> for IterList<T> {
-    #[inline]
-    fn index_mut(&mut self, index: isize) -> &mut Self::Output {
-        self.get_mut(index).unwrap_or_else(|| panic!("Index out of bounds"))
-    }
+	#[inline]
+	fn index_mut(&mut self, index: isize) -> &mut Self::Output {
+		self.get_mut(index).expect("Index out of bounds")
+	}
 }
 
 impl<T: Clone> Clone for IterList<T> {
-    /// Clone the list. `O(n)`.  
-    /// Cursor position is retained.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = vec![1, 2, 3].into_iter().collect::<IterList<_>>();
-    /// assert_eq!(format!("{:?}", list), "[1, 2, 3]");
-    ///
-    /// let cloned = list.clone();
-    /// assert_eq!(format!("{:?}", cloned), "[1, 2, 3]");
-    /// ```
-    fn clone(&self) -> Self {
-        let mut cursor = self.as_cursor();
-        cursor.move_to_front();
+	/// Clone the list. `O(n)`.  
+	/// Cursor position is retained.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list = vec![1, 2, 3].into_iter().collect::<IterList<_>>();
+	/// assert_eq!(format!("{:?}", list), "[1, 2, 3]");
+	///
+	/// let cloned = list.clone();
+	/// assert_eq!(format!("{:?}", cloned), "[1, 2, 3]");
+	/// ```
+	fn clone(&self) -> Self {
+		let mut cursor = self.as_cursor();
+		cursor.move_to_front();
 
-        let mut list = cursor.cloned().fold(Self::new(), |mut list, elem| {
-            list.push_next(elem);
-            list
-        });
+		let mut list = cursor.cloned()
+			.fold(Self::new(), |mut list, elem| { list.push_next(elem); list });
 
-        list.move_to(self.index());
-        list
-    }
+		let _ = list.move_to(self.index());
+		list
+	}
 }
 
 impl<T: Debug> Debug for IterList<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "[")?;
+	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+		write!(f, "[")?;
 
-        let base = -(self.index() as isize);
+		let base = -(self.index() as isize);
 
-        let mut i: isize = 0;
-        while i < (self.len as isize) {
-            let element = self.get(base + i);
+		for i in 0..self.len as isize {
+			let element = self.get(base + i);
 
-            if let Some(element) = element {
-                write!(f, "{:?}", element)?;
-            }
+			if let Some(element) = element {
+				write!(f, "{:?}", element)?;
+			}
 
-            i += 1;
+			if i + 1 < (self.len as isize) {
+				write!(f, ", ")?;
+			}
+		}
 
-            if i < (self.len as isize) {
-                write!(f, ", ")?;
-            }
-        }
-
-        write!(f, "]")
-    }
+		write!(f, "]")
+	}
 }
 
 impl<T> Drop for IterList<T> {
-    #[inline]
-    /// Drop the list. `O(n)`.
-    fn drop(&mut self) {
-        unsafe {
-            self.move_to_front();
-            while let Some(current) = self.current.as_ptr() {
-                self.current = (*current).next;
-                mem::drop(Box::from_raw(current));
-            }
-        }
-    }
+	#[inline]
+	/// Drop the list. `O(n)`.
+	fn drop(&mut self) {
+		if self.is_empty() { return; }
+
+		self.move_to_front();
+		loop {
+			let next = unsafe { self.current.as_ref().next };
+			mem::drop(unsafe { Box::from_raw(self.current.as_ptr()) });
+			match next {
+				Some(next) => self.current = next,
+				None => break,
+			}
+		}
+	}
 }
 
 
 /*
- * ==========================
- * ===== Iteratory bits =====
- * ==========================
- */
+* ==========================
+* ===== Iteratory bits =====
+* ==========================
+*/
 
 impl<T> Iterator for IterList<T> {
-    type Item = T;
+	type Item = T;
 
-    /// Internally this call is just `consume_forward`. `O(1)`.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = IterList::from(vec![1, 2, 3]);
-    ///
-    /// // list moved
-    /// let num = list.fold(0, |acc, elem| acc + elem);
-    /// assert_eq!(num, 6);
-    /// ```
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.consume_forward().map(|(elem, b)| {
-            if !b { while self.consume_backward().is_some() {} }
-            elem
-        })
-    }
+	/// Internally this call is just `consume_forward`. `O(1)`.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list = IterList::from(vec![1, 2, 3]);
+	///
+	/// // list moved
+	/// let num = list.fold(0, |acc, elem| acc + elem);
+	/// assert_eq!(num, 6);
+	/// ```
+	#[inline]
+	fn next(&mut self) -> Option<Self::Item> {
+		self.consume_forward().map(|(elem, b)| {
+			if !b { while self.consume_backward().is_some() {} }
+			elem
+		})
+	}
 }
 
 impl<T> DoubleEndedIterator for IterList<T> {
-    /// Internally this call is just `consume_backward`. `O(1)`.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let mut list = IterList::from(vec![1, 2, 3]);
-    ///
-    /// list.move_to_back();
-    ///
-    /// let two = list.nth_back(1);
-    /// assert_eq!(two, Some(2));
-    /// ```
-    #[inline]
-    fn next_back(&mut self) -> Option<Self::Item> {
-        self.consume_backward().map(|(elem, b)| {
-            if !b { while self.consume_forward().is_some() {} }
-            elem
-        })
-    }
+	/// Internally this call is just `consume_backward`. `O(1)`.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let mut list = IterList::from(vec![1, 2, 3]);
+	///
+	/// list.move_to_back();
+	///
+	/// let two = list.nth_back(1);
+	/// assert_eq!(two, Some(2));
+	/// ```
+	#[inline]
+	fn next_back(&mut self) -> Option<Self::Item> {
+		self.consume_backward().map(|(elem, b)| {
+			if !b { while self.consume_forward().is_some() {} }
+			elem
+		})
+	}
 }
 
 impl<T> From<Vec<T>> for IterList<T> {
-    /// Create a new list from a Vec. `O(n)`.  
-    /// Cursor is set to the front of the list.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = IterList::from(vec![1, 2, 3]);
-    /// assert_eq!(format!("{:?}", list), "[1, 2, 3]");
-    /// assert_eq!(list.get_cursor(), Some(&1));
-    /// ```
-    fn from(vec: Vec<T>) -> Self {
-        let mut list = vec.into_iter().fold(Self::new(), |mut list, elem| {
-            list.push_next(elem);
-            list
-        });
-        list.move_to_front();
-        list
-    }
+	/// Create a new list from a Vec. `O(n)`.  
+	/// Cursor is set to the front of the list.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list = IterList::from(vec![1, 2, 3]);
+	/// assert_eq!(format!("{:?}", list), "[1, 2, 3]");
+	/// assert_eq!(list.current(), Some(&1));
+	/// ```
+	fn from(vec: Vec<T>) -> Self {
+		let mut list = vec.into_iter().fold(Self::new(), 
+			|mut list, elem| { list.push_next(elem); list });
+		list.move_to_front();
+		list
+	}
 }
 
 impl<T: Clone> From<&[T]> for IterList<T> {
-    /// Create a new list from a slice. `O(n)`.  
-    /// Cursor is set to the front of the list.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let array: &[u8] = &[1, 2, 3];
-    /// let list = IterList::from(array);
-    /// assert_eq!(format!("{:?}", list), "[1, 2, 3]");
-    /// assert_eq!(list.get_cursor(), Some(&1));
-    /// ```
-    fn from(slice: &[T]) -> Self {
-        let mut list = slice.iter().cloned().fold(Self::new(), |mut list, elem| {
-            list.push_next(elem);
-            list
-        });
-        list.move_to_front();
-        list
-    }
+	/// Create a new list from a slice. `O(n)`.  
+	/// Cursor is set to the front of the list.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let array: &[u8] = &[1, 2, 3];
+	/// let list = IterList::from(array);
+	/// assert_eq!(format!("{:?}", list), "[1, 2, 3]");
+	/// assert_eq!(list.current(), Some(&1));
+	/// ```
+	fn from(slice: &[T]) -> Self {
+		let mut list = slice.iter().cloned().fold(Self::new(), 
+			|mut list, elem| { list.push_next(elem); list });
+		list.move_to_front();
+		list
+	}
 }
 
 impl<T> FromIterator<T> for IterList<T> {
-    /// Create a new list from an iterator. `O(n)`.  
-    /// Cursor is set to the front of the list.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = (1..=3).into_iter().collect::<IterList<_>>();
-    /// assert_eq!(format!("{:?}", list), "[1, 2, 3]");
-    /// assert_eq!(list.get_cursor(), Some(&1));
-    /// ```
-    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        let mut list = iter.into_iter().fold(Self::new(), |mut list, elem| {
-            list.push_next(elem);
-            list
-        });
-        list.move_to_front();
-        list
-    }
+	/// Create a new list from an iterator. `O(n)`.  
+	/// Cursor is set to the front of the list.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list = (1..=3).into_iter().collect::<IterList<_>>();
+	/// assert_eq!(format!("{:?}", list), "[1, 2, 3]");
+	/// assert_eq!(list.current(), Some(&1));
+	/// ```
+	fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+		let mut list = iter.into_iter().fold(Self::new(), 
+			|mut list, elem| { list.push_next(elem); list });
+		list.move_to_front();
+		list
+	}
 }
 
 
 
 /*
- * =======================
- * ===== Cursor bits =====
- * =======================
- */
+* =======================
+* ===== Cursor bits =====
+* =======================
+*/
 
 /// A copy of a cursor of an IterList.  
 /// Allows for traversing the list without modifying the original.  
@@ -931,284 +857,308 @@ impl<T> FromIterator<T> for IterList<T> {
 ///
 /// assert_eq!(cursor.next(), Some(&1));
 /// assert_eq!(cursor.next(), Some(&2));
-/// assert_eq!(cursor.get_cursor(), Some(&3));
+/// assert_eq!(cursor.current(), Some(&3));
 ///
-/// assert_eq!(list.get_cursor(), Some(&1));
+/// assert_eq!(list.current(), Some(&1));
 /// ```
 #[derive(Clone, Copy)]
 pub struct Cursor<'i, T> {
-    current: *mut Node<T>,
-    index:   usize,
-    _list:   PhantomData<&'i T>,
+	current: Option<NonNull<Node<T>>>,
+	index:   usize,
+	_list:   PhantomData<&'i T>,
 }
 
 unsafe impl<'i, T: Send> Send for Cursor<'i, T> {}
 unsafe impl<'i, T: Sync> Sync for Cursor<'i, T> {}
 
 impl<'i, T> Iterator for Cursor<'i, T> {
-    type Item = &'i T;
+	type Item = &'i T;
 
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        unsafe {
-            self.current.as_ref().map(|c| {
-                self.current = c.next;
-                self.index += 1;
-                &c.elem
-            })
-        }
-    }
+	#[inline]
+	fn next(&mut self) -> Option<Self::Item> {
+		self.current.map(|c| {
+			self.current = unsafe { c.as_ref().next };
+			self.index += 1;
+			unsafe { &c.as_ref().elem }
+		})
+	}
 }
 
 impl<'t, T> Cursor<'t, T> {
-    /// Update the cursor to match the current state of the list. `O(1)`.  
-    /// Useful if you lose track of the list, or want to use the same cursor on multiple lists.
-    #[inline]
-    pub fn reacquire(&mut self, list: &'t IterList<T>) {
-        self.current = list.current;
-        self.index   = list.index;
-    }
+	/// Create a new cursor from a raw pointer. `O(1)`.
+	///
+	/// # Safety
+	/// The pointer must be valid and point to a `Node` in a valid `IterList`.
+	#[inline]
+	pub const unsafe fn from_raw(ptr: *mut u8) -> Self {
+		Self {
+			current: Some(NonNull::new_unchecked(ptr as *mut Node<T>)),
+			index:   0,
+			_list:   PhantomData,
+		}
+	}
 
-    /// Get a ref to the current element. `O(1)`.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = IterList::from(vec![1, 2, 3]);
-    /// let mut cursor = list.as_cursor();
-    ///
-    /// assert_eq!(cursor.get_cursor(), Some(&1));
-    /// ```
-    #[inline]
-    pub fn get_cursor(&self) -> Option<&T> {
-        unsafe { self.current.as_ref().map(|c| &c.elem) }
-    }
+	/// Create a new dangling cursor. `O(1)`.
+	/// The cursor will be invalid until `Cursor::reacquire` is called on a non-empty list.
+	///
+	/// # Safety
+	/// Calling most methods on a dangling cursor will result in UB.
+	#[inline]
+	pub const unsafe fn new_dangling() -> Self {
+		Self {
+			current: Some(NonNull::dangling()),
+			index:   0,
+			_list:   PhantomData,
+		}
+	}
 
-    /// Get the index of the cursor `O(1)`.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = IterList::from(vec![1, 2, 3]);
-    /// let mut cursor = list.as_cursor();
-    ///
-    /// cursor.next();
-    /// assert_eq!(cursor.index(), 1);
-    /// ```
-    #[inline]
-    pub const fn index(&self) -> usize {
-        self.index
-    }
+	/// Creates an empty cursor. `O(1)`.
+	/// The cursor will be invalid until `Cursor::reacquire` is called on a non-empty list.
+	#[inline]
+	pub const fn new() -> Self {
+		Self {
+			current: None,
+			index:   0,
+			_list:   PhantomData,
+		}
+	}
 
-    /// Move the cursor to the front of the list. `O(n)`.  
-    /// Returns the number of elements traversed.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = IterList::from(vec![1, 2, 3]);
-    /// let mut cursor = list.as_cursor();
-    ///
-    /// cursor.move_to_back();
-    /// assert_eq!(cursor.get_cursor(), Some(&3));
-    ///
-    /// let offset = cursor.move_to_front();
-    /// assert_eq!(offset, 2);
-    /// assert_eq!(cursor.get_cursor(), Some(&1));
-    /// ```
-    pub fn move_to_front(&mut self) -> usize {
-        unsafe {
-            self.index = 0;
-            
-            let mut offset = 0;
-            while let Some(prev) = self.current.as_ref().map(|c| c.prev).filter(|p| !p.is_null()) {
-                self.current = prev;
-                offset += 1;
-            }
-            offset
-        }
-    }
+	/// Create a new cursor from an IterList. `O(1)`.
+	/// The new cursor is an exact copy of the list's cursor.
+	/// 
+	#[inline]
+	pub fn from(list: &'t IterList<T>) -> Self {
+		assert!(!list.is_empty(), "Cannot create a cursor from an empty list");
+		Self {
+			current: Some(list.current),
+			index:   list.index,
+			_list:   PhantomData,
+		}
+	}
 
-    /// Move the cursor to the back of the list. `O(n)`.  
-    /// Returns the number of elements traversed.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = IterList::from(vec![1, 2, 3]);
-    /// let mut cursor = list.as_cursor();
-    ///
-    /// let offset = cursor.move_to_back();
-    /// assert_eq!(offset, 2);
-    /// assert_eq!(cursor.get_cursor(), Some(&3));
-    /// ```
-    pub fn move_to_back(&mut self) -> usize {
-        unsafe {
-            let mut offset = 0;
-            while let Some(next) = self.current.as_ref().map(|c| c.next).filter(|p| !p.is_null()) {
-                self.current = next;
-                offset += 1;
-            }
-            self.index += offset;
-            offset
-        }
-    }
+	/// Update the cursor to match the current state of the list. `O(1)`.  
+	/// Useful if you lose track of the list, or want to use the same cursor on multiple lists.
+	#[inline]
+	pub fn reacquire(&mut self, list: &'t IterList<T>) {
+		self.current = (list.len != 0).then_some(list.current);
+		self.index   = list.index;
+	}
 
-    /// Move the cursor to the specified index. `O(n)`.
-    /// If the index is out of bounds the cursor will be moved to the edge, 
-    /// and `false` will be returned.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = IterList::from(vec![1, 2, 3]);
-    /// let mut cursor = list.as_cursor();
-    ///
-    /// cursor.move_to(1);
-    /// assert_eq!(cursor.get_cursor(), Some(&2));
-    /// ```
-    /// # Panics
-    /// Panics if the index is out of bounds.
-    #[inline]
-    pub fn move_to(&mut self, index: usize) -> bool {
-        match self.index.cmp(&index) {
-            Ordering::Greater => (0..self.index - index).fold(true, |_, _| self.retreat()),
-            Ordering::Less    => (0..index - self.index).fold(true, |_, _| self.advance()),
-            Ordering::Equal   => true,
-        }
-    }
+	/// Get a ref to the current element. `O(1)`.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list = IterList::from(vec![1, 2, 3]);
+	/// let mut cursor = list.as_cursor();
+	///
+	/// assert_eq!(cursor.current(), Some(&1));
+	/// ```
+	#[inline]
+	pub fn current(&self) -> Option<&T> {
+		self.current.map(|c| unsafe { &c.as_ref().elem })
+	}
 
-    /// Move the cursor one step forward. `O(1)`.  
-    /// Returns `false` if the cursor could not be moved.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = IterList::from(vec![1, 2, 3]);
-    /// let mut cursor = list.as_cursor();
-    ///
-    /// assert_eq!(cursor.get_cursor(), Some(&1));
-    ///
-    /// cursor.advance();
-    /// assert_eq!(cursor.get_cursor(), Some(&2));
-    /// ```
-    #[inline]
-    pub fn advance(&mut self) -> bool {
-        unsafe {
-            self.current.as_ref().and_then(|c| c.next.as_ptr()).map(|c| {
-                self.current = c;
-                self.index += 1;
-            }).is_some()
-        }
-    }
+	/// Get the index of the cursor `O(1)`.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list = IterList::from(vec![1, 2, 3]);
+	/// let mut cursor = list.as_cursor();
+	///
+	/// cursor.next();
+	/// assert_eq!(cursor.index(), 1);
+	/// ```
+	#[inline]
+	pub const fn index(&self) -> usize {
+		self.index
+	}
 
-    /// Move the cursor one step backward. `O(1)`.  
-    /// Returns `false` if the cursor could not be moved.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = IterList::from(vec![1, 2, 3]);
-    /// let mut cursor = list.as_cursor();
-    ///
-    /// cursor.move_to_back();
-    /// assert_eq!(cursor.get_cursor(), Some(&3));
-    ///
-    /// cursor.retreat();
-    /// assert_eq!(cursor.get_cursor(), Some(&2));
-    /// ```
-    #[inline]
-    pub fn retreat(&mut self) -> bool {
-        unsafe {
-            self.current.as_ref().and_then(|c| c.prev.as_ptr()).map(|c| {
-                self.current = c;
-                self.index -= 1;
-            }).is_some()
-        }
-    }
+	/// Move the cursor to the front of the list. `O(n)`.  
+	/// Returns the number of elements traversed.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list = IterList::from(vec![1, 2, 3]);
+	/// let mut cursor = list.as_cursor();
+	///
+	/// cursor.move_to_back();
+	/// assert_eq!(cursor.current(), Some(&3));
+	///
+	/// let offset = cursor.move_to_front();
+	/// assert_eq!(offset, 2);
+	/// assert_eq!(cursor.current(), Some(&1));
+	/// ```
+	pub fn move_to_front(&mut self) -> usize {
+		self.index = 0;
 
-    /// Move the cursor by a given offset. `O(n)`.  
-    /// If the offset is out of bounds the cursor will be moved to the edge, 
-    /// and `false` will be returned.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = IterList::from(vec![1, 2, 3]);
-    /// let mut cursor = list.as_cursor();
-    ///
-    /// cursor.move_to_back();
-    /// assert_eq!(cursor.index(), 2);
-    ///
-    /// cursor.move_by(-2);
-    /// assert_eq!(cursor.index(), 0);
-    ///
-    /// cursor.move_by(10);
-    /// assert_eq!(cursor.index(), 2);
-    /// ```
-    /// # Panics
-    /// Panics if the offset is out of bounds.
-    #[inline]
-    pub fn move_by(&mut self, offset: isize) -> bool {
-        match offset.cmp(&0) {
-            Ordering::Greater => (0..offset ).fold(true, |_, _| self.advance()),
-            Ordering::Less    => (0..-offset).fold(true, |_, _| self.retreat()),
-            Ordering::Equal   => true,
-        }
-    }
+		for i in 0_usize.. {
+			match self.current.and_then(|c| unsafe { c.as_ref().prev }) {
+				Some(prev) => self.current = Some(prev),
+				None => return i,
+			}
+		}
+		unsafe { std::hint::unreachable_unchecked() }
+	}
 
-    /// Get a ref to an element at the given offset. `O(n)`.
-    /// Returns `None` if the offset is out of bounds.
-    /// ```
-    /// # use iterlist::IterList;
-    /// let list = IterList::from(vec![1, 2, 3]);
-    /// let mut cursor = list.as_cursor();
-    ///
-    /// assert_eq!(cursor.get_cursor(), Some(&1));
-    /// assert_eq!(cursor.get(1), Some(&2));
-    /// assert_eq!(cursor.get(-1), None);
-    /// ```
-    pub fn get(&self, offset: isize) -> Option<&T> {
-        offset.checked_abs().and_then(|s| (s > self.index as isize).into())?;
+	/// Move the cursor to the back of the list. `O(n)`.  
+	/// Returns the number of elements traversed.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list = IterList::from(vec![1, 2, 3]);
+	/// let mut cursor = list.as_cursor();
+	///
+	/// let offset = cursor.move_to_back();
+	/// assert_eq!(offset, 2);
+	/// assert_eq!(cursor.current(), Some(&3));
+	/// ```
+	pub fn move_to_back(&mut self) -> usize {
+		for i in 0_usize.. {
+			match self.current.and_then(|c| unsafe { c.as_ref().next }) {
+				Some(next) => self.current = Some(next),
+				None => {
+					self.index = i;
+					return i;
+				},
+			}
+		}
+		unsafe { std::hint::unreachable_unchecked() }
+	}
 
-        let mut ptr = self.current.as_ptr()?;
+	/// Move the cursor to the specified index. `O(n)`.
+	/// If the index is out of bounds the cursor will be moved to the edge, 
+	/// and `false` will be returned.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list = IterList::from(vec![1, 2, 3]);
+	/// let mut cursor = list.as_cursor();
+	///
+	/// cursor.move_to(1);
+	/// assert_eq!(cursor.current(), Some(&2));
+	/// ```
+	/// # Panics
+	/// Panics if the index is out of bounds.
+	#[inline]
+	#[must_use]
+	pub fn move_to(&mut self, index: usize) -> bool {
+		match self.index.cmp(&index) {
+			Ordering::Greater => !(0..self.index - index).any(|_| !self.retreat()),
+			Ordering::Less    => !(0..index - self.index).any(|_| !self.advance()),
+			Ordering::Equal   => true,
+		}
+	}
 
-        unsafe {
-            match offset.cmp(&0) {
-                Ordering::Greater => (0..offset).for_each(|_| {ptr.as_ref().map(|c| ptr = c.next); }),
-                Ordering::Less    => (0..-offset).for_each(|_| {ptr.as_ref().map(|c| ptr =  c.prev); }),
-                Ordering::Equal   => return self.get_cursor(),
-            }
+	/// Move the cursor one step forward. `O(1)`.  
+	/// Returns `false` if the cursor could not be moved.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list = IterList::from(vec![1, 2, 3]);
+	/// let mut cursor = list.as_cursor();
+	///
+	/// assert_eq!(cursor.current(), Some(&1));
+	///
+	/// cursor.advance();
+	/// assert_eq!(cursor.current(), Some(&2));
+	/// ```
+	#[inline]
+	#[must_use]
+	pub fn advance(&mut self) -> bool {
+		self.current.and_then(|c| unsafe { c.as_ref().next }).map(|next| {
+				self.current = Some(next);
+				self.index += 1; })
+			.is_some()
+	}
 
-            ptr.as_ref().map(|c| &c.elem )
-        }
-    }
+	/// Move the cursor one step backward. `O(1)`.  
+	/// Returns `false` if the cursor could not be moved.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list = IterList::from(vec![1, 2, 3]);
+	/// let mut cursor = list.as_cursor();
+	///
+	/// cursor.move_to_back();
+	/// assert_eq!(cursor.current(), Some(&3));
+	///
+	/// cursor.retreat();
+	/// assert_eq!(cursor.current(), Some(&2));
+	/// ```
+	#[inline]
+	#[must_use]
+	pub fn retreat(&mut self) -> bool {
+		self.current.and_then(|c| unsafe { c.as_ref().prev }).map(|prev| {
+				self.current = Some(prev);
+				self.index -= 1; })
+			.is_some()
+	}
+
+	/// Move the cursor by a given offset. `O(n)`.  
+	/// If the offset is out of bounds the cursor will be moved to the edge, 
+	/// and `false` will be returned.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list = IterList::from(vec![1, 2, 3]);
+	/// let mut cursor = list.as_cursor();
+	///
+	/// cursor.move_to_back();
+	/// assert_eq!(cursor.index(), 2);
+	///
+	/// cursor.move_by(-2);
+	/// assert_eq!(cursor.index(), 0);
+	///
+	/// cursor.move_by(10);
+	/// assert_eq!(cursor.index(), 2);
+	/// ```
+	/// # Panics
+	/// Panics if the offset is out of bounds.
+	#[inline]
+	pub fn move_by(&mut self, offset: isize) -> bool {
+		match offset.cmp(&0) {
+			Ordering::Greater => (0..offset ).fold(true, |_, _| self.advance()),
+			Ordering::Less    => (0..-offset).fold(true, |_, _| self.retreat()),
+			Ordering::Equal   => true,
+		}
+	}
+
+	/// Get a ref to an element at the given offset. `O(n)`.
+	/// Returns `None` if the offset is out of bounds.
+	/// ```
+	/// # use iterlist::IterList;
+	/// let list = IterList::from(vec![1, 2, 3]);
+	/// let mut cursor = list.as_cursor();
+	///
+	/// assert_eq!(cursor.current(), Some(&1));
+	/// assert_eq!(cursor.get(1), Some(&2));
+	/// assert_eq!(cursor.get(-1), None);
+	/// ```
+	pub fn get(&self, offset: isize) -> Option<&T> {
+		match offset.cmp(&0) {
+			Ordering::Greater => (0.. offset).try_fold(self.current, |mut ptr, _| ptr.and_then(|c| unsafe { c.as_ref().next }).map(|c| { ptr = Some(c); ptr }))?,
+			Ordering::Less    => (0..-offset).try_fold(self.current, |mut ptr, _| ptr.and_then(|c| unsafe { c.as_ref().prev }).map(|c| { ptr = Some(c); ptr }))?,
+			Ordering::Equal   => self.current
+		}.map(|c| unsafe { &c.as_ref().elem })
+	}
 }
 
 impl<'i, T> std::ops::Deref for Cursor<'i, T> {
-    type Target = T;
+	type Target = T;
 
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        self.get_cursor().unwrap()
-    }
+	#[inline]
+	fn deref(&self) -> &Self::Target {
+		self.current().unwrap()
+	}
 }
 
 
 impl<'i, T> std::ops::Index<isize> for Cursor<'i, T> {
-    type Output = T;
+	type Output = T;
 
-    /// Essentially equivalent to `get`. `O(n)`.  
-    /// # Panics
-    /// Panics if the index is out of bounds.
-    #[inline]
-    fn index(&self, index: isize) -> &Self::Output {
-        self.get(index).unwrap_or_else(|| panic!("Index out of bounds"))
-    }
+	/// Essentially equivalent to `get`. `O(n)`.  
+	/// # Panics
+	/// Panics if the index is out of bounds.
+	#[inline]
+	fn index(&self, index: isize) -> &Self::Output {
+		self.get(index).unwrap_or_else(|| panic!("Index out of bounds"))
+	}
 }
 
 impl<T: Debug> Debug for Cursor<'_, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}: {:?}", self.index, self.get_cursor())
-    }
-}
-
-
-
-
-
-
-pub trait PtrExt<T> {
-    fn as_ptr(self) -> Option<*mut T>;
-}
-
-impl<T> PtrExt<T> for *mut T {
-    #[inline]
-    fn as_ptr(self) -> Option<*mut T> {
-        (!self.is_null()).then_some(self) 
-    }
+	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+		write!(f, "{}: {:?}", self.index, self.current())
+	}
 }

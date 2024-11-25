@@ -18,7 +18,7 @@
 //! assert_eq!(format!("{:?}", list), "[-1, 1, 2, 3]");
 //! 
 //! list.move_to(2);
-//! assert_eq!(list.get_cursor(), Some(&2));
+//! assert_eq!(list.current(), Some(&2));
 //! 
 //! list.move_by(-2);
 //! assert_eq!(list.index(), 0);
@@ -48,4 +48,4 @@
 pub mod atomic;
 
 mod list;
-pub use list::{IterList, Cursor, ContinousIterList};
+pub use list::{IterList, Cursor};

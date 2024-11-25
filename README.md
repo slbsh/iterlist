@@ -13,7 +13,7 @@ Sign here to join the linked-list uprising against the `Vec` tyranny!
 Are you bored of performant data structures?  
 Do you want to do some lock-free shenanigans?  
 *slaps hood*  
-Well this baby's now `Send + Sync` and can mutate atomically across threads!  
+Well this baby's now `Send + Sync`  
 
 ~~Using Result<Option<Result<Result ...~~   
 ![Hollow](./hollow.png)
@@ -72,5 +72,6 @@ assert_eq!(num, 3);
 - [x] `feature(atomic)` - atomic IterList and Cursor.
 - [ ] `feature(pool)` - semi-pool allocated list for grouping elements into contiguous memory.
 - [ ] `feature(no_std)` - no std support.
+- [ ] `feature(serde)` - serde support.
 
 Feel free to add any of these if ya wanna!
