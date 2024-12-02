@@ -763,6 +763,10 @@ impl<T> Iterator for IterList<T> {
 			elem
 		})
 	}
+
+	#[inline]
+	fn size_hint(&self) -> (usize, Option<usize>) 
+		{ (self.len, Some(self.len)) }
 }
 
 impl<T> DoubleEndedIterator for IterList<T> {
@@ -868,8 +872,8 @@ pub struct Cursor<'i, T> {
 	_list:   PhantomData<&'i T>,
 }
 
-unsafe impl<'i, T: Send> Send for Cursor<'i, T> {}
-unsafe impl<'i, T: Sync> Sync for Cursor<'i, T> {}
+unsafe impl<T: Send> Send for Cursor<'_, T> {}
+unsafe impl<T: Sync> Sync for Cursor<'_, T> {}
 
 impl<'i, T> Iterator for Cursor<'i, T> {
 	type Item = &'i T;
@@ -882,6 +886,10 @@ impl<'i, T> Iterator for Cursor<'i, T> {
 			unsafe { &c.as_ref().elem }
 		})
 	}
+
+	#[inline]
+	fn size_hint(&self) -> (usize, Option<usize>) 
+		{ (self.index, None) }
 }
 
 impl<'t, T> Cursor<'t, T> {
@@ -1135,7 +1143,7 @@ impl<'t, T> Cursor<'t, T> {
 	}
 }
 
-impl<'i, T> std::ops::Deref for Cursor<'i, T> {
+impl<T> std::ops::Deref for Cursor<'_, T> {
 	type Target = T;
 
 	#[inline]
@@ -1145,7 +1153,7 @@ impl<'i, T> std::ops::Deref for Cursor<'i, T> {
 }
 
 
-impl<'i, T> std::ops::Index<isize> for Cursor<'i, T> {
+impl<T> std::ops::Index<isize> for Cursor<'_, T> {
 	type Output = T;
 
 	/// Essentially equivalent to `get`. `O(n)`.  
