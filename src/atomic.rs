@@ -5,6 +5,8 @@ use std::cmp::Ordering;
 use std::mem;
 use std::fmt::Debug;
 
+compile_error!("The atomic module has not been fully tested and may be borked :p\n I dont *fully* know how to do this, if ye do, let me know :)");
+
 /// an Atomic version of IterList.
 pub struct IterList<T> {
     current: AtomicPtr<Node<T>>,
@@ -664,7 +666,7 @@ impl<T> IterList<T> {
         Cursor {
             _list:   PhantomData,
             index:   self.index.load(Relaxed).into(),
-            current: self.current.load(Relaxed).into(),
+            current: (&self.current).into(),
         }
     }
 }
@@ -841,7 +843,7 @@ impl<T> FromIterator<T> for IterList<T> {
 /// ```
 // #[derive(Clone, Copy)]
 pub struct Cursor<'i, T> {
-    current: AtomicPtr<Node<T>>,
+    current: &'i AtomicPtr<Node<T>>,
     index:   AtomicUsize,
     _list:   PhantomData<&'i T>,
 }
@@ -915,7 +917,7 @@ impl<'t, T> Cursor<'t, T> {
     /// Useful if you lose track of the list, or want to use the same cursor on multiple lists.
     #[inline]
     pub fn reacquire(&mut self, list: &'t IterList<T>) {
-        self.current = list.current.load(Relaxed).into();
+        self.current = (&list.current).into();
         self.index   = list.index.load(Relaxed).into();
     }
 

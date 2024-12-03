@@ -40,6 +40,8 @@
 //! assert_eq!(num, 3);
 //! ```
 
+// #![feature(min_specialization)]
+
 #![allow(forbidden_lint_groups)]
 #![forbid(clippy::all)]
 #![allow(clippy::option_map_unit_fn, clippy::wrong_self_convention, clippy::uninit_assumed_init)]
@@ -47,5 +49,13 @@
 #[cfg(feature = "atomic")]
 pub mod atomic;
 
+#[cfg(not(feature = "nightly"))]
 mod list;
+#[cfg(not(feature = "nightly"))]
 pub use list::{IterList, Cursor};
+
+#[cfg(feature = "nightly")]
+mod nightly;
+#[cfg(feature = "nightly")]
+pub use nightly::{IterList, Cursor};
+
