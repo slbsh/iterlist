@@ -6,12 +6,6 @@ It's a doubly linked list with a cursor based api.
 `O(1)` pretty much everything (at and around the cursor).  
 Originally made it for [Shard](https://github.com/shard-org/shard), but thought it could be useful to someone else.  
 
-Sign here to say no to the `Vec` tyranny!  
-☑  
-
-**Now with our secret ingredient**  
-*micro optimizations*
-
 ~~Using Result<Option<Result<Result ...~~   
 ![Hollow](./hollow.png)
 

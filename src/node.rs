@@ -1,4 +1,4 @@
-use std::ptr::{self, NonNull};
+use std::ptr::NonNull;
 use std::alloc;
 use std::mem;
 
@@ -14,13 +14,11 @@ pub trait NodeTrait<F: ?Sized, T: ?Sized> {
 
 impl<T: Sized> NodeTrait<T, T> for Node<T> {
 	fn new_nonnull(elem: T) -> NonNull<Self> {
-		unsafe {
-			Box::into_non_null(Box::new(Self {
-				next: None,
-				prev: None,
-				elem,
-			}))
-		}
+		Box::into_non_null(Box::new(Self {
+			next: None,
+			prev: None,
+			elem,
+		}))
 	}
 }
 
@@ -30,7 +28,7 @@ impl<T: Clone> NodeTrait<&[T], [T]> for Node<[T]> {
 			let (layout, offset) = alloc::Layout::new::<Option<NonNull<Node<[T]>>>>()
 				.repeat(2).unwrap().0.extend(alloc::Layout::for_value(elem)).unwrap();
 
-			let mut node = NonNull::new(
+			let node = NonNull::new(
 				std::ptr::slice_from_raw_parts_mut(
 					alloc::alloc_zeroed(layout.pad_to_align()).cast::<T>(),
 					elem.len()) as *mut Node<[T]>).expect("alloc fail");
