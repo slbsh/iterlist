@@ -24,8 +24,6 @@ impl<T: Sized> NodeTrait<T, T> for Node<T> {
 	}
 }
 
-// TODO: one day use specialization
-// this is needlessly slow for T: Copy as ptr::copy_nonoverlapping is one op
 impl<T: Clone> NodeTrait<&[T], [T]> for Node<[T]> {
 	fn new_nonnull(elem: &[T]) -> NonNull<Self> {
 		unsafe {
@@ -40,9 +38,6 @@ impl<T: Clone> NodeTrait<&[T], [T]> for Node<[T]> {
 			(&raw mut (*node.as_ptr()).next).write(None);
 			(&raw mut (*node.as_ptr()).prev).write(None);
 
-// 			ptr::copy_nonoverlapping(
-// 				elem.as_ptr(), (*node.as_ptr()).elem.as_mut_ptr(), elem.len());
-
 			elem.iter().enumerate().for_each(|(i, e)|
 				node.as_ptr().byte_add(offset).cast::<T>().add(i).write(e.clone()));
 
@@ -50,6 +45,29 @@ impl<T: Clone> NodeTrait<&[T], [T]> for Node<[T]> {
 		}
 	}
 }
+
+// TODO: one day use specialization
+// impl<T: Copy> NodeTrait<&[T], [T]> for Node<[T]> {
+// 	fn new_nonnull(elem: &[T]) -> NonNull<Self> {
+// 		unsafe {
+// 			let (layout, offset) = alloc::Layout::new::<Option<NonNull<Node<[T]>>>>()
+// 				.repeat(2).unwrap().0.extend(alloc::Layout::for_value(elem)).unwrap();
+//
+// 			let mut node = NonNull::new(
+// 				std::ptr::slice_from_raw_parts_mut(
+// 					alloc::alloc_zeroed(layout.pad_to_align()).cast::<T>(),
+// 					elem.len()) as *mut Node<[T]>).expect("alloc fail");
+//
+// 			(&raw mut (*node.as_ptr()).next).write(None);
+// 			(&raw mut (*node.as_ptr()).prev).write(None);
+//
+// 			ptr::copy_nonoverlapping(
+// 				elem.as_ptr(), node.as_ptr().byte_add(offset).cast::<T>(), elem.len());
+//
+// 			node
+// 		}
+// 	}
+// }
 
 impl NodeTrait<&str, str> for Node<str> {
 	fn new_nonnull(elem: &str) -> NonNull<Self> {
