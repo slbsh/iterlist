@@ -6,14 +6,11 @@ It's a doubly linked list with a cursor based api.
 `O(1)` pretty much everything (at and around the cursor).  
 Originally made it for [Shard](https://github.com/shard-org/shard), but thought it could be useful to someone else.  
 
-Sign here to join the linked-list uprising against the `Vec` tyranny!  
+Sign here to say no to the `Vec` tyranny!  
 ☑  
 
-**Now Featuring:** the `atomic` module!  
-Are you bored of performant data structures?  
-Do you want to do some lock-free shenanigans?  
-*slaps hood*  
-Well this baby's now `Send + Sync`  
+**Now with our secret ingredient**  
+*micro optimizations*
 
 ~~Using Result<Option<Result<Result ...~~   
 ![Hollow](./hollow.png)
@@ -21,19 +18,14 @@ Well this baby's now `Send + Sync`
 ## Example
 
 ```rust
-use iterlist::IterList;
+use iterlist::*;
 
-let mut list = IterList::new();
-
-list.push_prev(-1);
-list.push_next(1);
-list.push_next(2);
-list.push_next(3);
+let mut list = list![-1, 1, 2, 3];
 
 assert_eq!(format!("{:?}", list), "[-1, 1, 2, 3]");
 
-list.move_to(2);
-assert_eq!(list.get_cursor(), Some(&2));
+list.goto(2);
+assert_eq!(list.current(), Some(&2));
 
 list.move_by(-2);
 assert_eq!(list.index(), 0);
@@ -60,8 +52,8 @@ assert_eq!(num, 3);
     (In my tests it was marginally better than `std::collections::VecDeque`)
 - You want to have multiple independent cursors on the same list.
 - You need an iterator that you can move around in and modify.
-- It's also noticably faster than `std::collections::LinkedList` in most cases!
-- You wanna look cool (⌐■-■) ... or not, I'm not your boss. (psst the api is preeetty nice :p)
+- It's also noticably faster than `std::collections::LinkedList` in all cases I've tested!
+- You wanna look cool (⌐■-■) ... or not
 
 ## Todos
 - [ ] `append`  - append another list to the end of this one.
@@ -69,9 +61,9 @@ assert_eq!(num, 3);
 - [ ] `drain`   - remove a range of elements (around the cursor) from the list.
 - [ ] `splice`  - replace a range of elements (around the cursor) with another list.
 - [ ] `DoubleEndedIterator` for `Cursor`.
-- [x] `feature(atomic)` - atomic IterList and Cursor.
+- [ ] `feature(atomic)` - atomic IterList and Cursor.
 - [ ] `feature(pool)` - semi-pool allocated list for grouping elements into contiguous memory.
-- [ ] `feature(no_std)` - no std support.
+- [ ] no std support.
 - [ ] `feature(serde)` - serde support.
 
 Feel free to add any of these if ya wanna!

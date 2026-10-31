@@ -15,11 +15,11 @@ pub trait NodeTrait<F: ?Sized, T: ?Sized> {
 impl<T: Sized> NodeTrait<T, T> for Node<T> {
 	fn new_nonnull(elem: T) -> NonNull<Self> {
 		unsafe {
-			NonNull::new_unchecked(Box::into_raw(Box::new(Self {
+			Box::into_non_null(Box::new(Self {
 				next: None,
 				prev: None,
 				elem,
-			})))
+			}))
 		}
 	}
 }
@@ -29,15 +29,22 @@ impl<T: Sized> NodeTrait<T, T> for Node<T> {
 impl<T: Clone> NodeTrait<&[T], [T]> for Node<[T]> {
 	fn new_nonnull(elem: &[T]) -> NonNull<Self> {
 		unsafe {
-			let node = NonNull::new_unchecked(ptr::slice_from_raw_parts_mut(
-				alloc::alloc(alloc::Layout::from_size_align(
-					mem::size_of::<Node<()>>() + mem::size_of_val(elem), 8)
-					.unwrap_unchecked()) as *mut T, elem.len()) as *mut Node<[T]>);
+			let (layout, offset) = alloc::Layout::new::<Option<NonNull<Node<[T]>>>>()
+				.repeat(2).unwrap().0.extend(alloc::Layout::for_value(elem)).unwrap();
+
+			let mut node = NonNull::new(
+				std::ptr::slice_from_raw_parts_mut(
+					alloc::alloc_zeroed(layout.pad_to_align()).cast::<T>(),
+					elem.len()) as *mut Node<[T]>).expect("alloc fail");
+
+			(&raw mut (*node.as_ptr()).next).write(None);
+			(&raw mut (*node.as_ptr()).prev).write(None);
 
 // 			ptr::copy_nonoverlapping(
 // 				elem.as_ptr(), (*node.as_ptr()).elem.as_mut_ptr(), elem.len());
-			elem.iter().zip((*node.as_ptr()).elem.iter_mut())
-				.for_each(|(elem, node)| *node = elem.clone());
+
+			elem.iter().enumerate().for_each(|(i, e)|
+				node.as_ptr().byte_add(offset).cast::<T>().add(i).write(e.clone()));
 
 			node
 		}
